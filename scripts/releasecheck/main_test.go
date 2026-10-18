@@ -46,6 +46,11 @@ func putManifest(t *testing.T, path string, update manifest) {
 
 func addTarget(t *testing.T, config configuration, key ed25519.PrivateKey, directory, target string) manifest {
 	t.Helper()
+	return addTargetNamed(t, config, key, directory, target, installerName(config, target))
+}
+
+func addTargetNamed(t *testing.T, config configuration, key ed25519.PrivateKey, directory, target, installer string) manifest {
+	t.Helper()
 	archiveName := "mouse-mapper-" + config.Version + "-" + target + ".tar.gz"
 	data := []byte("fixture archive for " + target)
 	putFile(t, filepath.Join(directory, archiveName), data)
@@ -60,7 +65,7 @@ func addTarget(t *testing.T, config configuration, key ed25519.PrivateKey, direc
 		},
 	}
 	putManifest(t, filepath.Join(directory, "update-"+target+".json"), update)
-	putFile(t, filepath.Join(directory, installerName(config, target)), []byte("fixture installer"))
+	putFile(t, filepath.Join(directory, installer), []byte("fixture installer"))
 	return update
 }
 
@@ -69,21 +74,29 @@ func publicKey(key ed25519.PrivateKey) ed25519.PublicKey {
 }
 
 func TestVerifyCompleteRelease(t *testing.T) {
-	for _, nested := range []bool{false, true} {
-		name := "flat"
-		if nested {
-			name = "nested"
-		}
-		t.Run(name, func(t *testing.T) {
+	for _, layout := range []struct {
+		name     string
+		nested   bool
+		uploaded bool
+	}{
+		{name: "flat local"},
+		{name: "nested local", nested: true},
+		{name: "GitHub downloaded", uploaded: true},
+	} {
+		t.Run(layout.name, func(t *testing.T) {
 			config, key := testConfig(t)
 			directory := t.TempDir()
 			targets := strings.Split(allTargets, ",")
 			for _, target := range targets {
 				folder := directory
-				if nested {
+				if layout.nested {
 					folder = filepath.Join(directory, target)
 				}
-				addTarget(t, config, key, folder, target)
+				installer := installerName(config, target)
+				if layout.uploaded {
+					installer = strings.ReplaceAll(installer, " ", ".")
+				}
+				addTargetNamed(t, config, key, folder, target, installer)
 			}
 			assets, err := verifyAssets(config, publicKey(key), directory, targets)
 			if err != nil || len(assets) != 15 {
@@ -97,7 +110,29 @@ func TestVerifyCompleteRelease(t *testing.T) {
 			if err != nil || strings.Count(string(text), "\n") != 15 {
 				t.Fatalf("invalid checksums: %v", err)
 			}
+			installer := "Mouse Mapper Setup 0.1.0 amd64.exe"
+			if layout.uploaded {
+				installer = strings.ReplaceAll(installer, " ", ".")
+				if strings.Contains(string(text), "  Mouse Mapper") {
+					t.Fatal("checksums contain local filenames instead of the downloaded names")
+				}
+			}
+			if !strings.Contains(string(text), "  "+installer+"\n") {
+				t.Fatal("checksums do not use the installer's actual filename")
+			}
 		})
+	}
+}
+
+func TestRejectAmbiguousInstallerNames(t *testing.T) {
+	config, key := testConfig(t)
+	directory := t.TempDir()
+	addTarget(t, config, key, directory, "windows-amd64")
+	uploaded := strings.ReplaceAll(installerName(config, "windows-amd64"), " ", ".")
+	putFile(t, filepath.Join(directory, uploaded), []byte("another installer"))
+	_, err := verifyAssets(config, publicKey(key), directory, []string{"windows-amd64"})
+	if err == nil || !strings.Contains(err.Error(), "ambiguous installer") {
+		t.Fatalf("expected ambiguous installer failure, got %v", err)
 	}
 }
 

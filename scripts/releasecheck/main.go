@@ -193,7 +193,10 @@ func verifyAssets(config configuration, key ed25519.PublicKey, directory string,
 			}
 			assets = append(assets, file)
 		}
-		installer := installerName(config, target)
+		installer, err := findInstaller(folder, installerName(config, target))
+		if err != nil {
+			return nil, err
+		}
 		digest, size, err := hashFile(filepath.Join(folder, installer))
 		if err != nil {
 			return nil, fmt.Errorf("installer %s: %w", installer, err)
@@ -264,6 +267,33 @@ func installerName(config configuration, target string) string {
 		return fmt.Sprintf("%s %s.dmg", config.Name, config.Version)
 	}
 	return fmt.Sprintf("%s %s %s.dmg", config.Name, config.Version, architecture)
+}
+
+func findInstaller(directory, localName string) (string, error) {
+	// GitHub replaces spaces with dots in uploaded release asset names. Accept
+	// only the two exact names, never a loose glob or an ambiguous pair.
+	names := []string{localName}
+	if uploadedName := strings.ReplaceAll(localName, " ", "."); uploadedName != localName {
+		names = append(names, uploadedName)
+	}
+	var found string
+	for _, name := range names {
+		_, err := os.Lstat(filepath.Join(directory, name))
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		if found != "" {
+			return "", fmt.Errorf("ambiguous installer: both %s and %s are present", found, name)
+		}
+		found = name
+	}
+	if found == "" {
+		return "", fmt.Errorf("missing installer %s (or its GitHub space-to-dot filename)", localName)
+	}
+	return found, nil
 }
 
 func hashFile(path string) ([]byte, int64, error) {

@@ -1,7 +1,7 @@
 {
   "name": "Mouse Mapper",
   "identifier": "io.github.fondoger.mousemapper",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "copyright": "Copyright 2026 fondoger. MIT License.",
   "icon": "resources/icon.png",
   "out": "build",

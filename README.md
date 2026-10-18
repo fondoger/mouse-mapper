@@ -23,10 +23,12 @@
 
 | 平台 | 安装包 | 输入实现与运行要求 |
 | --- | --- | --- |
-| Windows 10 / 11，x64 / ARM64 | `Mouse Mapper Setup … amd64.exe` / `… arm64.exe` | `WH_MOUSE_LL` + `SendInput`；不需要 WebView2。普通权限应用不能向高权限窗口或安全桌面注入按键。 |
+| Windows 10 / 11，x64 / ARM64 | `Mouse.Mapper.Setup.….amd64.exe` / `….arm64.exe` | `WH_MOUSE_LL` + `SendInput`；不需要 WebView2。普通权限应用不能向高权限窗口或安全桌面注入按键。 |
 | macOS 12+，Apple silicon / Intel | 通用 `.dmg`，另提供 `arm64` / `amd64` 包 | `CGEventTap` + `CGEventPost`；需要辅助功能与输入监控授权。 |
 
 从 [Releases](https://github.com/fondoger/mouse-mapper/releases) 下载对应安装包：Windows 运行安装程序；macOS 打开 DMG 并将应用拖入 Applications，然后从 Applications 启动。首次在 macOS 使用时，在「系统设置 → 隐私与安全性」中的「辅助功能」和「输入监控」允许 Mouse Mapper，按应用提示重试或重新启动。
+
+GitHub 会将安装包文件名中的空格改为点号，例如本地的 `Mouse Mapper Setup 0.1.1 amd64.exe` 下载后为 `Mouse.Mapper.Setup.0.1.1.amd64.exe`，通用 macOS 包为 `Mouse.Mapper.0.1.1.dmg`。校验和清单使用下载后的实际文件名。
 
 **签名说明：** 更新归档使用 Ed25519 签名，但这与操作系统代码签名是两回事。目前 Windows 安装程序未做代码签名，macOS 使用 ad-hoc 签名，未配置 Developer ID 或 Apple 公证。SmartScreen / Gatekeeper 可能拦截下载的构建；请核对来源与 `SHA256SUMS.txt`，不要全局关闭系统安全保护。macOS 可选择本机从源码构建，或等待已公证的发行版。macOS 更新后也可能需要重新确认辅助功能授权。
 
@@ -108,6 +110,8 @@ MyGo 默认 `CGO_ENABLED=0`。Windows 打包会按需下载并校验 NSIS；首�
 Mouse Mapper is a quiet **Windows and macOS** utility built entirely in Go with **MyGo Native UI**. Map the back and forward mouse buttons to a key, shortcut, or held modifier; run in the background, hide the tray icon, launch at login, and optionally show brief, non-interactive shortcut feedback. Reopening the app restores its existing window. There is no webview, JavaScript runtime, or frontend build chain.
 
 **Install:** choose a Windows x64 / ARM64 installer or the universal macOS DMG from [Releases](https://github.com/fondoger/mouse-mapper/releases). macOS 12+ requires Accessibility and Input Monitoring permissions. Windows integrity boundaries and other mouse software can prevent injection. Windows installers are not code-signed; macOS builds are ad-hoc signed, not Developer ID signed or notarized. Update signing does not replace OS code signing. Never disable system-wide security protections to run the app.
+
+GitHub replaces spaces with dots in installer filenames: for example, `Mouse.Mapper.Setup.0.1.1.amd64.exe` or `Mouse.Mapper.0.1.1.dmg`. Published checksums use these actual download names; local build filenames retain spaces.
 
 **Updates:** the official `plugins/updater/native` plugin checks every **7 days by default**, preserves the last successful check across restarts, and supports manual checks. Automatic download/install is opt-in. Every update archive is verified against the embedded Ed25519 public key. Development builds and unwritable installations do not update themselves. Update checks contact GitHub over HTTPS; mouse mappings and typed content are never uploaded.
 

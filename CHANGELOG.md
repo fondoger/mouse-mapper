@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.1 - 2026-10-19
+
+- First public release of the native Windows and macOS app, with all features listed in 0.1.0.
+- Verify GitHub's normalized installer filenames as well as local build filenames; fail safely if both exist.
+- Publish SHA-256 checksums for the exact asset names users download.
+- Keep signed native auto-updates on a seven-day default interval, with automatic downloads/install opt-in.
+
+The 0.1.0 release remained an unpublished staging draft when the final asset-name check failed; no incomplete update was published. OS code-signing and macOS permission caveats below still apply.
+
 ## 0.1.0 - 2026-10-19
 
 - Native Go / MyGo interface for Windows and macOS; no webview or JavaScript runtime.

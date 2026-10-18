@@ -25,7 +25,7 @@ type uiMapper struct {
 
 func newUIMapper() *uiMapper {
 	return &uiMapper{state: State{
-		Settings: config.Default(), Version: "0.1.0", SupportedCodes: input.SupportedCodes(),
+		Settings: config.Default(), Version: "0.1.1", SupportedCodes: input.SupportedCodes(),
 		Status:     input.Status{Platform: runtime.GOOS, Available: true, Running: true},
 		ConfigPath: "settings.json",
 		Update:     UpdateState{Enabled: true, AutomaticChecks: true, IntervalDays: 7},
