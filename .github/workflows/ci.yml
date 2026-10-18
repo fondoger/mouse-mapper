@@ -1,0 +1,85 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      native_input:
+        description: Run the Windows input-hook smoke test when an interactive desktop is available
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CGO_ENABLED: "0"
+
+jobs:
+  test:
+    name: Native tests / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go mod download
+      - run: go test ./...
+      - run: go vet ./...
+      - name: Optional Windows hook and test-owned input sink
+        if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.native_input
+        shell: pwsh
+        run: |
+          if (-not [Environment]::UserInteractive) {
+            Write-Output 'Skipped native input smoke test: this runner has no interactive desktop.'
+            exit 0
+          }
+          $env:MOUSE_MAPPER_NATIVE_TEST = '1'
+          go test ./internal/input -run TestWindowsNativeHookAndSendInput -count=1
+          exit $LASTEXITCODE
+      - name: Render the actual native views without a browser
+        env:
+          MOUSE_MAPPER_UI_SNAPSHOTS: ${{ runner.temp }}/mouse-mapper-snapshots
+        run: go test ./internal/desktop -run TestNativeSnapshots -count=1
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-ui-${{ runner.os }}
+          path: ${{ runner.temp }}/mouse-mapper-snapshots/*.png
+          if-no-files-found: error
+          retention-days: 14
+      - name: Compile production build tags
+        run: go build -tags mygo_noinspector ./...
+
+  cross-compile:
+    name: Cross-compile / ${{ matrix.goos }}-${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [windows, darwin]
+        goarch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Build and vet target packages without cgo
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          go build -tags mygo_noinspector ./...
+          go vet ./...

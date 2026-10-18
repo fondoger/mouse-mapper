@@ -1,0 +1,31 @@
+# Generated caches and local tooling leftovers (the app is Go-only)
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+# Native and release output
+.mygo/
+build/
+release-assets/
+mouse-mapper
+mouse-mapper.exe
+mygo_windows_*.syso
+*.test
+*.test.exe
+
+# Local state and credentials
+.env
+.env.*
+!.env.example
+*.log
+*.p12
+*.pfx
+*.key
+
+# Editor and operating system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini

@@ -1,0 +1,476 @@
+// Package input translates global mouse side-button presses into keyboard input.
+package input
+
+import (
+	"errors"
+	"fmt"
+	"runtime"
+	"slices"
+	"sync"
+)
+
+const (
+	Back    = "back"
+	Forward = "forward"
+)
+
+type Binding struct {
+	Enabled bool     `json:"enabled"`
+	Keys    []string `json:"keys"`
+}
+
+type Config struct {
+	Enabled bool    `json:"enabled"`
+	Back    Binding `json:"back"`
+	Forward Binding `json:"forward"`
+}
+
+type Trigger struct {
+	Button string   `json:"button"`
+	Keys   []string `json:"keys"`
+}
+
+type Status struct {
+	Platform  string `json:"platform"`
+	Available bool   `json:"available"`
+	Running   bool   `json:"running"`
+	Message   string `json:"message"`
+	Error     string `json:"error,omitempty"`
+}
+
+// The generic modifier names intentionally map to the left-hand native keys.
+// This lets a user's physically held right-hand modifier remain independent.
+var modifiers = []string{"Control", "Alt", "Shift", "Meta"}
+
+var keyCodes = func() map[string]bool {
+	codes := map[string]bool{}
+	for _, code := range modifiers {
+		codes[code] = true
+	}
+	for c := 'A'; c <= 'Z'; c++ {
+		codes["Key"+string(c)] = true
+	}
+	for c := '0'; c <= '9'; c++ {
+		codes["Digit"+string(c)] = true
+		codes["Numpad"+string(c)] = true
+	}
+	for n := 1; n <= 24; n++ {
+		codes[fmt.Sprintf("F%d", n)] = true
+	}
+	for _, code := range []string{
+		"Escape", "Tab", "Backspace", "Enter", "Space", "Delete", "Insert",
+		"CapsLock", "PrintScreen", "ScrollLock", "Pause",
+		"Home", "End", "PageUp", "PageDown", "ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown",
+		"Minus", "Equal", "BracketLeft", "BracketRight", "Backslash", "Semicolon", "Quote",
+		"Backquote", "Comma", "Period", "Slash", "IntlBackslash",
+		"NumpadAdd", "NumpadSubtract", "NumpadMultiply", "NumpadDivide", "NumpadDecimal", "NumpadEnter",
+	} {
+		codes[code] = true
+	}
+	return codes
+}()
+
+// NormalizeKeys validates a chord and returns modifiers in a stable order,
+// followed by at most one ordinary KeyboardEvent.code. Modifier-only mappings
+// are useful for holding Shift or Control while dragging with the mouse.
+func NormalizeKeys(keys []string) ([]string, error) {
+	if len(keys) > 5 {
+		return nil, errors.New("a shortcut can contain at most four modifiers and one key")
+	}
+	seen := map[string]bool{}
+	var ordinary string
+	for _, code := range keys {
+		if !keyCodes[code] {
+			return nil, fmt.Errorf("unsupported key code %q", code)
+		}
+		if seen[code] {
+			continue
+		}
+		seen[code] = true
+		if !slices.Contains(modifiers, code) {
+			if ordinary != "" {
+				return nil, errors.New("a shortcut can contain only one non-modifier key")
+			}
+			ordinary = code
+		}
+	}
+	result := make([]string, 0, len(seen))
+	for _, modifier := range modifiers {
+		if seen[modifier] {
+			result = append(result, modifier)
+		}
+	}
+	if ordinary != "" {
+		result = append(result, ordinary)
+	}
+	return result, nil
+}
+
+func ValidateConfig(config Config) error {
+	_, err := normalizeConfig(config)
+	return err
+}
+
+func normalizeConfig(config Config) (Config, error) {
+	for _, item := range []struct {
+		name    string
+		binding *Binding
+	}{{Back, &config.Back}, {Forward, &config.Forward}} {
+		keys, err := NormalizeKeys(item.binding.Keys)
+		if err != nil {
+			return Config{}, fmt.Errorf("%s mapping: %w", item.name, err)
+		}
+		if item.binding.Enabled && len(keys) == 0 {
+			return Config{}, fmt.Errorf("%s mapping: choose a key or shortcut first", item.name)
+		}
+		item.binding.Keys = keys
+	}
+	return config, nil
+}
+
+type nativeDriver interface {
+	start() error
+	stop() error
+	sendKey(code string, down bool, heldModifiers []string) error
+	physicallyDown(code string) bool
+	openPermissions() error
+	supports(code string) bool
+}
+
+type keyReference struct {
+	count int
+	owned bool
+}
+
+// Engine owns the output keys, not merely the current settings. In particular,
+// a settings edit cannot strand a modifier or leak the release of a swallowed
+// mouse press to the application underneath.
+type Engine struct {
+	lifecycle     sync.Mutex
+	mu            sync.Mutex
+	config        Config
+	status        Status
+	driver        nativeDriver
+	active        map[string][]string
+	references    map[string]*keyReference
+	onTrigger     func(Trigger)
+	nativeFailure uint64
+	nativeError   error
+}
+
+func New(onTrigger func(Trigger)) *Engine {
+	e := &Engine{
+		status: Status{Platform: runtime.GOOS, Message: "Input service has not started"},
+		active: map[string][]string{}, references: map[string]*keyReference{},
+		onTrigger: onTrigger,
+	}
+	e.driver = newNativeDriver(e)
+	return e
+}
+
+func (e *Engine) Apply(config Config) error {
+	normalized, err := normalizeConfig(config)
+	if err != nil {
+		return err
+	}
+	for _, binding := range []Binding{normalized.Back, normalized.Forward} {
+		for _, code := range binding.Keys {
+			if !e.driver.supports(code) {
+				return fmt.Errorf("%s is not supported on %s", code, runtime.GOOS)
+			}
+		}
+		if runtime.GOOS == "windows" && slices.Contains(binding.Keys, "Control") && slices.Contains(binding.Keys, "Alt") && slices.Contains(binding.Keys, "Delete") {
+			return errors.New("Windows does not allow apps to simulate the secure Control+Alt+Delete shortcut")
+		}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if equalConfig(e.config, normalized) {
+		return nil
+	}
+	// Keep the active button entries until their physical releases arrive.
+	if err := e.releaseAllLocked(); err != nil {
+		return err
+	}
+	e.config = normalized
+	return nil
+}
+
+func (e *Engine) Start() error {
+	e.lifecycle.Lock()
+	defer e.lifecycle.Unlock()
+	e.mu.Lock()
+	if e.status.Running {
+		e.mu.Unlock()
+		return nil
+	}
+	if err := e.releaseAllLocked(); err != nil {
+		e.mu.Unlock()
+		return err
+	}
+	// A release may have happened while the native hook was not installed.
+	e.active = map[string][]string{}
+	failureGeneration := e.nativeFailure
+	e.mu.Unlock()
+	err := e.driver.start()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.nativeFailure != failureGeneration {
+		// A driver can publish readiness and then fail before Start gets the
+		// mutex back. Do not resurrect the failed service with stale readiness.
+		failure := errors.Join(e.nativeError, err)
+		e.status.Message = failure.Error()
+		e.status.Error = failure.Error()
+		return failure
+	}
+	e.status.Available = err == nil
+	e.status.Running = err == nil
+	if err != nil {
+		e.status.Message = err.Error()
+		e.status.Error = err.Error()
+		return err
+	}
+	e.status.Message = "Listening for mouse side buttons"
+	e.status.Error = ""
+	return nil
+}
+
+func (e *Engine) Stop() error {
+	e.lifecycle.Lock()
+	defer e.lifecycle.Unlock()
+	e.mu.Lock()
+	err := e.releaseAllLocked()
+	e.status.Running = false
+	e.status.Message = "Input service stopped"
+	e.mu.Unlock()
+	stopErr := e.driver.stop()
+	e.mu.Lock()
+	if stopErr == nil {
+		e.active = map[string][]string{}
+	}
+	if combined := errors.Join(err, stopErr); combined != nil {
+		e.status.Message = combined.Error()
+		e.status.Error = combined.Error()
+	} else {
+		e.status.Error = ""
+	}
+	e.mu.Unlock()
+	return errors.Join(err, stopErr)
+}
+
+func (e *Engine) Status() Status {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	status := e.status
+	if status.Running && !e.config.Enabled && status.Message == "Listening for mouse side buttons" {
+		status.Message = "Mapping paused"
+	}
+	return status
+}
+
+func (e *Engine) OpenPermissions() error {
+	e.lifecycle.Lock()
+	defer e.lifecycle.Unlock()
+	return e.driver.openPermissions()
+}
+
+// SupportedCodes returns the native backend's supported KeyboardEvent codes.
+func SupportedCodes() []string {
+	driver := newNativeDriver(nil)
+	result := make([]string, 0, len(keyCodes))
+	for code := range keyCodes {
+		if driver.supports(code) {
+			result = append(result, code)
+		}
+	}
+	slices.Sort(result)
+	return result
+}
+
+func (e *Engine) mouseButton(button string, down bool) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	keys, active := e.active[button]
+	if !down {
+		if !active {
+			return false
+		}
+		delete(e.active, button)
+		if err := e.releaseKeysLocked(keys); err != nil {
+			e.status.Message = err.Error()
+			e.status.Error = err.Error()
+		}
+		return true
+	}
+	if active {
+		return true
+	}
+	if !e.status.Running || !e.config.Enabled {
+		return false
+	}
+	var binding Binding
+	switch button {
+	case Back:
+		binding = e.config.Back
+	case Forward:
+		binding = e.config.Forward
+	default:
+		return false
+	}
+	if !binding.Enabled {
+		return false
+	}
+	if err := e.retryPendingReleasesLocked(); err != nil {
+		e.status.Message = err.Error()
+		e.status.Error = err.Error()
+		return false
+	}
+	pressed := make([]string, 0, len(binding.Keys))
+	for _, code := range binding.Keys {
+		if ref := e.references[code]; ref != nil {
+			ref.count++
+			pressed = append(pressed, code)
+			continue
+		}
+		ref := &keyReference{count: 1, owned: !e.driver.physicallyDown(code)}
+		e.references[code] = ref
+		if ref.owned {
+			if err := e.driver.sendKey(code, true, e.heldModifiersLocked()); err != nil {
+				delete(e.references, code)
+				releaseErr := e.releaseKeysLocked(pressed)
+				e.status.Message = errors.Join(err, releaseErr).Error()
+				e.status.Error = e.status.Message
+				// Fail open: neither half of this mouse click is swallowed.
+				return false
+			}
+		}
+		pressed = append(pressed, code)
+	}
+	e.active[button] = pressed
+	e.status.Message = "Listening for mouse side buttons"
+	e.status.Error = ""
+	if e.onTrigger != nil {
+		trigger := Trigger{Button: button, Keys: slices.Clone(binding.Keys)}
+		// Native hook callbacks must never wait for the webview or an overlay.
+		go e.onTrigger(trigger)
+	}
+	return true
+}
+
+// physicalKey is called only for hardware keyboard events. Keeping a physical
+// key-up from releasing a mapped key also handles the user releasing a modifier
+// that was already held before the side button went down.
+func (e *Engine) physicalKey(code string, down bool) bool {
+	if down {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if ref := e.references[code]; ref != nil {
+		if ref.count == 0 {
+			// A real key-up can finish a previously denied synthetic release.
+			delete(e.references, code)
+			return false
+		}
+		ref.owned = true
+		return true
+	}
+	return false
+}
+
+func (e *Engine) mouseHeld(button string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, held := e.active[button]
+	return held
+}
+
+func (e *Engine) nativeFailed(err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	cleanupErr := e.releaseAllLocked()
+	e.nativeFailure++
+	e.nativeError = errors.Join(err, cleanupErr)
+	e.status.Available = false
+	e.status.Running = false
+	e.status.Message = e.nativeError.Error()
+	e.status.Error = e.status.Message
+}
+
+func (e *Engine) releaseKeysLocked(keys []string) error {
+	var failures []error
+	for i := len(keys) - 1; i >= 0; i-- {
+		code := keys[i]
+		ref := e.references[code]
+		if ref == nil {
+			continue
+		}
+		ref.count--
+		if ref.count > 0 {
+			continue
+		}
+		delete(e.references, code)
+		if ref.owned && !e.driver.physicallyDown(code) {
+			if err := e.driver.sendKey(code, false, e.heldModifiersLocked()); err != nil {
+				// Retain ownership so an explicit pause/stop retries cleanup.
+				ref.count = 0
+				e.references[code] = ref
+				failures = append(failures, err)
+			}
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func (e *Engine) retryPendingReleasesLocked() error {
+	var pending []string
+	for code, ref := range e.references {
+		if ref.count == 0 {
+			ref.count = 1
+			pending = append(pending, code)
+		}
+	}
+	return e.releaseKeysLocked(pending)
+}
+
+func (e *Engine) releaseAllLocked() error {
+	// Release ordinary keys before modifiers even if both buttons share a chord.
+	keys := make([]string, 0, len(e.references))
+	for _, modifier := range modifiers {
+		if ref := e.references[modifier]; ref != nil {
+			ref.count = 1
+			keys = append(keys, modifier)
+		}
+	}
+	for code, ref := range e.references {
+		if !slices.Contains(modifiers, code) {
+			ref.count = 1
+			keys = append(keys, code)
+		}
+	}
+	for button := range e.active {
+		e.active[button] = nil
+	}
+	err := e.releaseKeysLocked(keys)
+	if err != nil {
+		e.status.Message = err.Error()
+		e.status.Error = err.Error()
+	}
+	return err
+}
+
+func (e *Engine) heldModifiersLocked() []string {
+	result := make([]string, 0, len(modifiers))
+	for _, code := range modifiers {
+		if ref := e.references[code]; ref != nil && ref.count > 0 {
+			result = append(result, code)
+		}
+	}
+	return result
+}
+
+func equalConfig(a, b Config) bool {
+	return a.Enabled == b.Enabled && a.Back.Enabled == b.Back.Enabled &&
+		a.Forward.Enabled == b.Forward.Enabled && slices.Equal(a.Back.Keys, b.Back.Keys) &&
+		slices.Equal(a.Forward.Keys, b.Forward.Keys)
+}

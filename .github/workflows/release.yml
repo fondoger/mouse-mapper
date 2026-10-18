@@ -1,0 +1,127 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CGO_ENABLED: "0"
+
+jobs:
+  prepare:
+    name: Validate and stage release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go test ./scripts/releasecheck
+      - name: Check version, repository and signing key
+        env:
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+        run: go run ./scripts/releasecheck -tag "$GITHUB_REF_NAME" -repository "$GITHUB_REPOSITORY" -require-key
+      - name: Create staging draft, never replace a public release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            draft=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')
+            if [ "$draft" != "true" ]; then
+              echo "This release is already public; publish a new version instead."
+              exit 1
+            fi
+          else
+            cat > "$RUNNER_TEMP/release-notes.md" <<'NOTES'
+          Native Go / MyGo desktop app for Windows and macOS. No webview or JavaScript runtime is required.
+
+          Updates are checked automatically every 7 days by default. MyGo verifies the Ed25519 signature of every update archive before installation; automatic download/install is opt-in.
+
+          **Signing notice:** Windows installers are not code-signed. macOS builds are ad-hoc signed, not Developer ID signed or notarized. SmartScreen / Gatekeeper may block downloaded builds. Do not disable system-wide security protections. Update signatures do not replace operating-system code signing.
+
+          Choose the Windows installer for your architecture, or the universal macOS DMG. The `.tar.gz`, `.delta`, and `update-*.json` files serve the built-in updater. `SHA256SUMS.txt` covers the release assets.
+          NOTES
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --draft --verify-tag --title "Mouse Mapper $GITHUB_REF_NAME" \
+              --notes-file "$RUNNER_TEMP/release-notes.md" --generate-notes
+          fi
+
+  build:
+    name: Build, sign updates and upload / ${{ matrix.name }}
+    needs: prepare
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            platform: windows/amd64,windows/arm64
+            targets: windows-amd64,windows-arm64
+          - name: macOS
+            os: macos-latest
+            platform: darwin/universal,darwin/arm64,darwin/amd64
+            targets: darwin-universal,darwin-arm64,darwin-amd64
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go mod download
+      - run: go test ./...
+      - run: go vet ./...
+      - name: Build signed update archives and upload to staging draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MYGO_UPDATER_PRIVATE_KEY: ${{ secrets.MYGO_UPDATER_PRIVATE_KEY }}
+        run: go tool mygo build -platform "${{ matrix.platform }}" -o build -skip-notarize -upload
+      - name: Verify every expected installer, manifest and archive signature
+        run: go run ./scripts/releasecheck -dir build -targets "${{ matrix.targets }}"
+
+  publish:
+    name: Verify all assets and publish automatically
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - name: Download the staged release and verify its complete update feeds
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --dir release-assets
+          go run ./scripts/releasecheck -tag "$GITHUB_REF_NAME" -repository "$GITHUB_REPOSITORY" \
+            -dir release-assets -checksums release-assets/SHA256SUMS.txt
+          gh release upload "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+            --clobber release-assets/SHA256SUMS.txt
+      - name: Make the complete release public
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          draft=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')
+          test "$draft" = "true"
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          fi

@@ -1,0 +1,20 @@
+{
+  "name": "Mouse Mapper",
+  "identifier": "io.github.fondoger.mousemapper",
+  "version": "0.1.0",
+  "copyright": "Copyright 2026 fondoger. MIT License.",
+  "icon": "resources/icon.png",
+  "out": "build",
+  "macos": {
+    "minimumSystemVersion": "12.0",
+    "infoPlist": {
+      "NSInputMonitoringUsageDescription": "Mouse Mapper monitors mouse side buttons and key state to run your shortcuts without leaving keys held down.",
+      "NSAccessibilityUsageDescription": "Mouse Mapper needs Accessibility permission to remap mouse side buttons to keyboard shortcuts."
+    }
+  },
+  "updates": {
+    "github": "fondoger/mouse-mapper",
+    "publicKey": "t2auJk45c9EeqEvhhHhyJIUg9HyvN0I+mU7dkAcrU3Q=",
+    "tagPrefix": "v"
+  }
+}
