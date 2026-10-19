@@ -25,7 +25,7 @@ type uiMapper struct {
 
 func newUIMapper() *uiMapper {
 	return &uiMapper{state: State{
-		Settings: config.Default(), Version: "0.1.1", SupportedCodes: input.SupportedCodes(),
+		Settings: config.Default(), Version: "0.2.0", SupportedCodes: input.SupportedCodes(),
 		Status:     input.Status{Platform: runtime.GOOS, Available: true, Running: true},
 		ConfigPath: "settings.json",
 		Update:     UpdateState{Enabled: true, AutomaticChecks: true, IntervalDays: 7},
@@ -272,16 +272,23 @@ func TestNativeSnapshots(t *testing.T) {
 	if err := os.MkdirAll(directory, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	v := testView(newUIMapper())
+	m := newUIMapper()
+	m.state.InputMethods = uiInputMethods()
+	v := testView(m)
 	tt := ui.NewTester(v.main, 1080, 760)
 	writeSnapshot(t, tt, filepath.Join(directory, "mappings.png"))
 	click(t, tt, "编辑后退键")
 	writeSnapshot(t, tt, filepath.Join(directory, "shortcut-editor.png"))
+	click(t, tt, "选择触发前的输入法")
+	writeSnapshot(t, tt, filepath.Join(directory, "input-method-picker.png"))
+	click(t, tt, "微信输入法")
+	writeSnapshot(t, tt, filepath.Join(directory, "input-method-selected.png"))
 	click(t, tt, "取消")
 	click(t, tt, "偏好设置")
 	writeSnapshot(t, tt, filepath.Join(directory, "preferences.png"))
 	v.acceptShortcut(ShortcutEvent{Button: input.Back, Keys: []string{"Control", "KeyC"}, Sequence: 1, Duration: 1200})
-	to := ui.NewTester(v.overlay, 350, 104)
+	width, height := overlaySize(v.lastEvent.Keys, v.state.Status.Platform)
+	to := ui.NewTester(v.overlay, width, height)
 	to.Advance(180 * time.Millisecond)
 	writeSnapshot(t, to, filepath.Join(directory, "overlay.png"))
 }

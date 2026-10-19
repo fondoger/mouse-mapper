@@ -3,6 +3,7 @@
 package input
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -201,8 +202,17 @@ func TestWindowsNativeHookAndSendInput(t *testing.T) {
 	peekMessageW.Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0, 0)
 	results := make(chan error, 2)
 	go func() {
-		results <- driver.sendKey("F24", true, nil)
-		results <- driver.sendKey("F24", false, nil)
+		for _, down := range []bool{true, false} {
+			results <- driver.runOnInputThread(context.Background(), func() error {
+				driver.mu.Lock()
+				thread := driver.session.thread
+				driver.mu.Unlock()
+				if actual := windows.GetCurrentThreadId(); actual != thread {
+					return fmt.Errorf("SendInput dispatched to thread %d, want hook thread %d", actual, thread)
+				}
+				return driver.sendKey("F24", down, nil)
+			})
+		}
 	}()
 	deadline := time.Now().Add(3 * time.Second)
 	var events []windowsKeyboardEvent

@@ -1,6 +1,7 @@
 package desktop
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
@@ -12,19 +13,22 @@ import (
 
 	"github.com/fondoger/mouse-mapper/internal/config"
 	"github.com/fondoger/mouse-mapper/internal/input"
+	"github.com/fondoger/mouse-mapper/internal/inputmethod"
 )
 
 type Settings = config.Settings
 
 type State struct {
-	Settings       Settings     `json:"settings"`
-	Status         input.Status `json:"status"`
-	Version        string       `json:"version"`
-	Recording      bool         `json:"recording"`
-	ConfigPath     string       `json:"configPath"`
-	Warning        string       `json:"warning"`
-	SupportedCodes []string     `json:"supportedCodes"`
-	Update         UpdateState  `json:"update"`
+	Settings          Settings             `json:"settings"`
+	Status            input.Status         `json:"status"`
+	Version           string               `json:"version"`
+	Recording         bool                 `json:"recording"`
+	ConfigPath        string               `json:"configPath"`
+	Warning           string               `json:"warning"`
+	SupportedCodes    []string             `json:"supportedCodes"`
+	Update            UpdateState          `json:"update"`
+	InputMethods      []inputmethod.Method `json:"inputMethods"`
+	InputMethodsError string               `json:"inputMethodsError,omitempty"`
 }
 
 type ShortcutEvent struct {
@@ -61,6 +65,7 @@ type Mapper struct {
 	opMu     sync.Mutex
 	nativeMu sync.Mutex
 	timerMu  sync.Mutex
+	methodMu sync.Mutex
 	mu       sync.RWMutex
 	stopping atomic.Bool
 
@@ -78,16 +83,20 @@ type Mapper struct {
 	configWarning  string
 	desktopWarning string
 	onChanged      func(State)
+	inputMethods   []inputmethod.Method
+	methodError    string
+	listMethods    func(context.Context) ([]inputmethod.Method, error)
 }
 
 func newMapper(store settingsStore, engine inputEngine, host desktopHost, path, version string) *Mapper {
 	return &Mapper{
-		settings:   config.Default(),
-		store:      store,
-		engine:     engine,
-		host:       host,
-		version:    version,
-		configPath: path,
+		settings:    config.Default(),
+		store:       store,
+		engine:      engine,
+		host:        host,
+		version:     version,
+		configPath:  path,
+		listMethods: inputmethod.List,
 	}
 }
 
@@ -126,12 +135,14 @@ func (m *Mapper) initialize() {
 func (m *Mapper) GetState() State {
 	m.mu.RLock()
 	state := State{
-		Settings:       config.Clone(m.settings),
-		Version:        m.version,
-		Recording:      m.recording,
-		ConfigPath:     m.configPath,
-		Warning:        strings.TrimSpace(strings.Join([]string{m.configWarning, m.desktopWarning}, " ")),
-		SupportedCodes: input.SupportedCodes(),
+		Settings:          config.Clone(m.settings),
+		Version:           m.version,
+		Recording:         m.recording,
+		ConfigPath:        m.configPath,
+		Warning:           strings.TrimSpace(strings.Join([]string{m.configWarning, m.desktopWarning}, " ")),
+		SupportedCodes:    input.SupportedCodes(),
+		InputMethods:      slices.Clone(m.inputMethods),
+		InputMethodsError: m.methodError,
 	}
 	inputErr := m.inputErr
 	m.mu.RUnlock()
@@ -316,7 +327,7 @@ func (m *Mapper) SetRecording(recording bool) (State, error) {
 func (m *Mapper) Quit() { m.host.quit() }
 
 func (m *Mapper) stop() error {
-	// OnQuit runs on the UI thread before MyGo drains its remaining tasks.
+	// OnBeforeQuit runs on the UI thread before MyGo drains its remaining tasks.
 	// Do not take opMu: a pending preference save may hold it while awaiting
 	// that thread. nativeMu encloses only OS input calls, never a UI callback.
 	m.stopping.Store(true)

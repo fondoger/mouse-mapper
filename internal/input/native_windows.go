@@ -3,6 +3,7 @@
 package input
 
 import (
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -15,7 +16,14 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-const inputTag = 0x4D4D4150
+const (
+	inputTag                = 0x4D4D4150
+	windowsInputWorkMessage = 0x8001
+	windowsInputStopMessage = 0x8002
+	windowsInputTimeout     = 3 * time.Second
+)
+
+var errWindowsInputStopped = errors.New("Windows input hook stopped before queued input work ran")
 
 var (
 	user32              = windows.NewLazySystemDLL("user32.dll")
@@ -121,15 +129,31 @@ type windowsMessage struct {
 
 type windowsDriver struct {
 	engine           *Engine
+	transition       sync.Mutex
 	mu               sync.Mutex
-	thread           uint32
-	done             chan struct{}
-	mouseHook        uintptr
-	keyboardHook     uintptr
+	session          *windowsInputSession
+	nextSession      uintptr
 	mouseCallback    uintptr
 	keyboardCallback uintptr
 	physical         [512]atomic.Bool
 	codes            map[int]string
+}
+
+type windowsInputSession struct {
+	id        uintptr
+	thread    uint32
+	ready     chan struct{}
+	done      chan struct{}
+	accepting bool
+	stopSent  bool
+	tasks     []*windowsInputTask
+}
+
+type windowsInputTask struct {
+	ctx     context.Context
+	work    func() error
+	result  chan error
+	pending bool
 }
 
 func newNativeDriver(engine *Engine) nativeDriver {
@@ -143,45 +167,61 @@ func newNativeDriver(engine *Engine) nativeDriver {
 func (d *windowsDriver) supports(code string) bool { _, ok := windowsKeys[code]; return ok }
 
 func (d *windowsDriver) start() error {
+	d.transition.Lock()
+	defer d.transition.Unlock()
 	d.mu.Lock()
-	previous := d.done
+	previous := d.session
 	d.mu.Unlock()
 	if previous != nil {
 		select {
-		case <-previous:
-		case <-time.After(3 * time.Second):
+		case <-previous.done:
+		case <-time.After(windowsInputTimeout):
 			return errors.New("the previous Windows input hook is still stopping")
 		}
 	}
 	d.mu.Lock()
-	d.done = make(chan struct{})
-	done := d.done
+	d.nextSession++
+	session := &windowsInputSession{id: d.nextSession, ready: make(chan struct{}), done: make(chan struct{})}
+	d.session = session
 	d.mu.Unlock()
 	ready := make(chan error, 1)
-	go d.run(ready)
+	go d.run(session, ready)
 	if err := <-ready; err != nil {
-		<-done
+		<-session.done
 		return err
 	}
 	return nil
 }
 
-func (d *windowsDriver) run(ready chan<- error) {
+func (d *windowsDriver) run(session *windowsInputSession, ready chan<- error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
-	d.mu.Lock()
-	d.thread = windows.GetCurrentThreadId()
-	done := d.done
-	d.mu.Unlock()
+	var mouseHook, keyboardHook uintptr
 	defer func() {
+		d.rejectInputTasks(session)
+		if keyboardHook != 0 {
+			unhookWindowsHookEx.Call(keyboardHook)
+		}
+		if mouseHook != 0 {
+			unhookWindowsHookEx.Call(mouseHook)
+		}
 		d.mu.Lock()
-		d.thread = 0
+		session.thread = 0
+		select {
+		case <-session.ready:
+		default:
+			close(session.ready)
+		}
+		// Offline execution is safe only after both native hooks are removed.
+		close(session.done)
 		d.mu.Unlock()
-		close(done)
 	}()
-	// Force creation of the message queue before another thread can post Quit.
+	// Publish the thread only after its message queue exists.
 	var message windowsMessage
 	peekMessageW.Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0, 0)
+	d.mu.Lock()
+	session.thread = windows.GetCurrentThreadId()
+	d.mu.Unlock()
 	if d.mouseCallback == 0 {
 		d.mouseCallback = windows.NewCallback(d.handleMouse)
 		d.keyboardCallback = windows.NewCallback(d.handleKeyboard)
@@ -192,15 +232,13 @@ func (d *windowsDriver) run(ready chan<- error) {
 		ready <- windowsCallError("install mouse hook", err)
 		return
 	}
-	d.mouseHook = hook
-	defer unhookWindowsHookEx.Call(hook)
+	mouseHook = hook
 	hook, _, err = setWindowsHookExW.Call(13, d.keyboardCallback, module, 0)
 	if hook == 0 {
 		ready <- windowsCallError("install keyboard state hook", err)
 		return
 	}
-	d.keyboardHook = hook
-	defer unhookWindowsHookEx.Call(hook)
+	keyboardHook = hook
 	// Install the state hook before seeding: a key released during startup
 	// must either appear released in this snapshot or arrive in the queue.
 	for _, key := range windowsKeys {
@@ -215,17 +253,171 @@ func (d *windowsDriver) run(ready chan<- error) {
 		state, _, _ := getAsyncKeyState.Call(vk)
 		d.physical[key.index()].Store(state&0x8000 != 0)
 	}
+	d.mu.Lock()
+	session.accepting = true
+	close(session.ready)
+	d.mu.Unlock()
 	ready <- nil
 	for {
 		result, _, messageErr := getMessageW.Call(uintptr(unsafe.Pointer(&message)), 0, 0, 0)
 		if int32(result) == -1 {
+			d.rejectInputTasks(session)
 			d.engine.nativeFailed(windowsCallError("read input messages", messageErr))
 			return
 		}
 		if result == 0 {
+			d.rejectInputTasks(session)
+			d.engine.nativeFailed(errors.New("the Windows input message loop closed; restart Mouse Mapper"))
+			return
+		}
+		if d.handleInputMessage(session, message) {
 			return
 		}
 	}
+}
+
+func (d *windowsDriver) handleInputMessage(session *windowsInputSession, message windowsMessage) bool {
+	if message.WParam != session.id {
+		return false
+	}
+	switch message.Message {
+	case windowsInputWorkMessage:
+		d.runInputTask(session)
+	case windowsInputStopMessage:
+		return true
+	}
+	return false
+}
+
+func (d *windowsDriver) runOnInputThread(ctx context.Context, work func() error) error {
+	ctx, cancel := context.WithTimeout(ctx, windowsInputTimeout)
+	defer cancel()
+	d.mu.Lock()
+	session := d.session
+	d.mu.Unlock()
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		d.mu.Lock()
+		if session != d.session {
+			d.mu.Unlock()
+			return errWindowsInputStopped
+		}
+		inactive := session == nil
+		if session != nil {
+			select {
+			case <-session.done:
+				inactive = true
+			default:
+			}
+		}
+		if inactive {
+			d.mu.Unlock()
+			// The gate prevents Start installing a hook between this check and an
+			// offline SendInput. Never hold d.mu while executing engine work.
+			d.transition.Lock()
+			d.mu.Lock()
+			unchanged := session == d.session
+			d.mu.Unlock()
+			if !unchanged {
+				d.transition.Unlock()
+				return errWindowsInputStopped
+			}
+			err := ctx.Err()
+			if err == nil {
+				err = work()
+			}
+			d.transition.Unlock()
+			return err
+		}
+		if session.thread == windows.GetCurrentThreadId() {
+			d.mu.Unlock()
+			return work()
+		}
+		if !session.accepting {
+			wait := session.ready
+			select {
+			case <-session.ready:
+				wait = session.done
+			default:
+			}
+			d.mu.Unlock()
+			select {
+			case <-wait:
+				continue
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		task := &windowsInputTask{ctx: ctx, work: work, result: make(chan error, 1), pending: true}
+		session.tasks = append(session.tasks, task)
+		posted, _, postErr := postThreadMessageW.Call(uintptr(session.thread), windowsInputWorkMessage, session.id, 0)
+		if posted == 0 {
+			d.cancelInputTaskLocked(session, task, windowsCallError("queue input work", postErr))
+		}
+		d.mu.Unlock()
+		select {
+		case err := <-task.result:
+			return err
+		case <-ctx.Done():
+			d.mu.Lock()
+			d.cancelInputTaskLocked(session, task, ctx.Err())
+			d.mu.Unlock()
+			// If execution already began, it owns completion. Do not return and
+			// leave a detached closure that could inject after cancellation.
+			return <-task.result
+		}
+	}
+}
+
+func (d *windowsDriver) cancelInputTaskLocked(session *windowsInputSession, task *windowsInputTask, err error) {
+	if !task.pending {
+		return
+	}
+	for i, pending := range session.tasks {
+		if pending == task {
+			copy(session.tasks[i:], session.tasks[i+1:])
+			session.tasks[len(session.tasks)-1] = nil
+			session.tasks = session.tasks[:len(session.tasks)-1]
+			break
+		}
+	}
+	task.pending = false
+	task.result <- err
+}
+
+func (d *windowsDriver) rejectInputTasks(session *windowsInputSession) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.rejectInputTasksLocked(session)
+}
+
+func (d *windowsDriver) rejectInputTasksLocked(session *windowsInputSession) {
+	session.accepting = false
+	for _, task := range session.tasks {
+		task.pending = false
+		task.result <- errWindowsInputStopped
+	}
+	session.tasks = nil
+}
+
+func (d *windowsDriver) runInputTask(session *windowsInputSession) {
+	d.mu.Lock()
+	if d.session != session || !session.accepting || len(session.tasks) == 0 {
+		d.mu.Unlock()
+		return
+	}
+	task := session.tasks[0]
+	session.tasks[0] = nil
+	session.tasks = session.tasks[1:]
+	task.pending = false
+	d.mu.Unlock()
+	err := task.ctx.Err()
+	if err == nil {
+		err = task.work()
+	}
+	task.result <- err
 }
 
 func (d *windowsDriver) handleMouse(code int32, message uintptr, event *windowsMouseEvent) uintptr {
@@ -279,31 +471,40 @@ func (d *windowsDriver) next(code int32, message uintptr, event unsafe.Pointer) 
 
 func (d *windowsDriver) stop() error {
 	d.mu.Lock()
-	thread, done := d.thread, d.done
+	session := d.session
+	if session != nil && session.thread != 0 && session.thread == windows.GetCurrentThreadId() {
+		d.mu.Unlock()
+		return errors.New("cannot synchronously stop the Windows input hook from its own callback")
+	}
 	d.mu.Unlock()
-	if done == nil {
+	d.transition.Lock()
+	defer d.transition.Unlock()
+	d.mu.Lock()
+	session = d.session
+	if session == nil {
+		d.mu.Unlock()
 		return nil
 	}
 	select {
-	case <-done:
+	case <-session.done:
+		d.mu.Unlock()
 		return nil
 	default:
 	}
-	if thread != 0 {
-		result, _, err := postThreadMessageW.Call(uintptr(thread), 0x0012, 0, 0)
+	d.rejectInputTasksLocked(session)
+	if !session.stopSent {
+		result, _, err := postThreadMessageW.Call(uintptr(session.thread), windowsInputStopMessage, session.id, 0)
 		if result == 0 {
-			select {
-			case <-done:
-				return nil
-			default:
-				return windowsCallError("stop input hook", err)
-			}
+			d.mu.Unlock()
+			return windowsCallError("stop input hook", err)
 		}
+		session.stopSent = true
 	}
+	d.mu.Unlock()
 	select {
-	case <-done:
+	case <-session.done:
 		return nil
-	case <-time.After(3 * time.Second):
+	case <-time.After(windowsInputTimeout):
 		return errors.New("timed out stopping the Windows input hook")
 	}
 }

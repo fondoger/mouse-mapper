@@ -49,7 +49,7 @@ type application struct {
 func Run(assets Assets) error {
 	mygo.App.SetName("Mouse Mapper")
 	if mygo.App.Version() == "" {
-		mygo.App.SetVersion("0.1.1")
+		mygo.App.SetVersion("0.2.0")
 	}
 	if !mygo.App.RequestSingleInstanceLock() {
 		return nil
@@ -109,11 +109,7 @@ func Run(assets Assets) error {
 	mygo.App.OnSecondInstance(func(_ []string, _ string) { app.showMain() })
 	mygo.App.OnActivate(func(_ bool) { app.showMain() })
 	mygo.App.OnBeforeQuit(func(_ *mygo.QuitEvent) {
-		app.quitting.Store(true)
-		if app.overlayTimer != nil {
-			app.overlayTimer.Stop()
-		}
-		app.doneOnce.Do(func() { close(app.done) })
+		app.beginQuit()
 	})
 	mygo.App.OnQuit(func() {
 		if err := app.mapper.stop(); err != nil {
@@ -122,6 +118,19 @@ func Run(assets Assets) error {
 	})
 	mygo.App.WhenReady(app.ready)
 	return mygo.App.Run()
+}
+
+func (app *application) beginQuit() {
+	app.quitting.Store(true)
+	if app.overlayTimer != nil {
+		app.overlayTimer.Stop()
+	}
+	app.doneOnce.Do(func() { close(app.done) })
+	// Cancel prepared shortcuts before the UI loop drains any queued TIS work.
+	// OnQuit is too late: those callbacks can run after the windows close.
+	if err := app.mapper.stop(); err != nil {
+		log.Printf("stop input before quit: %v", err)
+	}
 }
 
 func (app *application) ready() {
@@ -153,17 +162,7 @@ func (app *application) ready() {
 	app.mainWindow.OnHide(func() {
 		go func() { _, _ = app.mapper.SetRecording(false) }()
 	})
-	app.overlay = mygo.NewWindow(mygo.WindowOptions{
-		Title: "Mouse Mapper Shortcut", Content: ui.View(app.view.overlay), Width: 350, Height: 104,
-		Hidden: true, Frameless: true, Transparent: true, BackgroundColor: "#0000",
-		AlwaysOnTop: true, SkipTaskbar: true, DisableResize: true, DisableMove: true,
-		DisableMinimize: true, DisableMaximize: true, DisableFullScreen: true, DisableShadow: true,
-		Panel: true,
-	})
-	app.overlay.SetMenu(mygo.NewMenu(nil))
-	app.overlay.SetIgnoreMouseEvents(true)
-	app.overlay.SetVisibleOnAllWorkspaces(true)
-	app.overlayError = configureOverlay(app.overlay)
+	app.overlay, app.overlayError = newShortcutOverlay(app.view)
 	// A hidden native surface does not paint until shown. Waiting for the
 	// web-page-style ready event here would keep the first window hidden forever.
 	if app.showOnReady {
@@ -313,9 +312,12 @@ func (app *application) notify(event ShortcutEvent, show bool) {
 			app.overlay.Hide()
 			return
 		}
-		display := mygo.Screen.DisplayNearestPoint(mygo.Screen.CursorScreenPoint())
-		area := display.WorkArea
-		app.overlay.SetPosition(area.X+area.Width-350-24, area.Y+area.Height-104-24)
+		width, height := overlaySize(event.Keys, app.view.state.Status.Platform)
+		if err := placeOverlay(app.overlay, width, height); err != nil {
+			app.overlay.Hide()
+			log.Printf("position shortcut overlay: %v", err)
+			return
+		}
 		app.overlay.ShowInactive()
 		if app.overlayTimer != nil {
 			app.overlayTimer.Stop()

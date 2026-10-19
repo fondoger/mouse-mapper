@@ -47,22 +47,22 @@ type nativeView struct {
 	error    string
 	help     bool
 
-	editing      bool
-	editButton   string
-	editKeys     []string
-	editMode     int
-	capture      bool
-	captured     bool
-	captureFocus ui.Handle
-	lastMods     ui.Modifiers
-	editError    string
-	manualQuery  string
+	editing             bool
+	editButton          string
+	editKeys            []string
+	editMode            int
+	capture             bool
+	captured            bool
+	captureFocus        ui.Handle
+	recorder            shortcutRecorder
+	editError           string
+	manualQuery         string
+	editInputMethod     string
+	editInputMethodName string
 
-	lastEvent       ShortcutEvent
-	mainSequence    uint64
-	mainTriggerAt   time.Time
-	overlaySequence uint64
-	overlayAt       time.Time
+	lastEvent     ShortcutEvent
+	mainSequence  uint64
+	mainTriggerAt time.Time
 }
 
 func newNativeView(mapper nativeMapper) *nativeView {
@@ -79,6 +79,7 @@ func (v *nativeView) acceptState(state State) {
 	if !state.Recording {
 		v.editing = false
 		v.capture = false
+		v.recorder.reset()
 		v.captureFocus.CancelFocus()
 	}
 }
@@ -127,18 +128,27 @@ func (v *nativeView) action(fn func() error) {
 }
 
 func (v *nativeView) startEditor(button string) {
-	keys := v.state.Settings.Back.Keys
+	binding := v.state.Settings.Back
 	if button == input.Forward {
-		keys = v.state.Settings.Forward.Keys
+		binding = v.state.Settings.Forward
 	}
-	keys = slices.Clone(keys)
-	v.perform(func() (State, error) { return v.mapper.SetRecording(true) }, func() {
+	keys := slices.Clone(binding.Keys)
+	v.perform(func() (State, error) {
+		state, err := v.mapper.SetRecording(true)
+		if err == nil {
+			if provider, ok := v.mapper.(inputMethodProvider); ok {
+				state = provider.RefreshInputMethods()
+			}
+		}
+		return state, err
+	}, func() {
 		if !v.state.Recording {
 			return
 		}
 		v.editing, v.capture, v.captured = true, true, false
 		v.editButton, v.editKeys, v.editMode, v.editError = button, keys, 0, ""
-		v.lastMods = 0
+		v.editInputMethod, v.editInputMethodName = binding.InputMethod, binding.InputMethodName
+		v.recorder.reset()
 		v.captureFocus.Focus()
 	})
 }
@@ -150,12 +160,17 @@ func (v *nativeView) cancelEditor() {
 func (v *nativeView) saveEditor() {
 	keys := slices.Clone(v.editKeys)
 	button := v.editButton
+	method, methodName := v.editInputMethod, v.editInputMethodName
+	if method == "" {
+		methodName = ""
+	}
 	v.perform(func() (State, error) {
 		state, err := v.mapper.ChangeSettings(func(next *Settings) {
+			binding := input.Binding{Enabled: true, Keys: keys, InputMethod: method, InputMethodName: methodName}
 			if button == input.Back {
-				next.Back = input.Binding{Enabled: true, Keys: keys}
+				next.Back = binding
 			} else {
-				next.Forward = input.Binding{Enabled: true, Keys: keys}
+				next.Forward = binding
 			}
 		})
 		if err != nil {
@@ -388,6 +403,10 @@ func (v *nativeView) mappingCard(c *ui.Context, button string, binding input.Bin
 					}
 				}
 				ui.Text(c, caption).FontSize(10).TextColor(muted)
+				if binding.InputMethod != "" {
+					method := "先切换到 " + v.inputMethodName(binding.InputMethod, binding.InputMethodName)
+					ui.Text(c, method).FontSize(10).TextColor(blue).SingleLine().MinWidth(0).FillWidth().Tooltip(method)
+				}
 			})
 			if ui.ButtonBase(c.Key("edit")).Label("编辑"+name).Gap(5).Padding(9, 11).Radius(8).
 				Background(ui.Hex("#f5f7fa")).TextColor(muted).Disabled(v.busy).Children(func() {
@@ -412,7 +431,7 @@ func (v *nativeView) preferences(c *ui.Context) {
 	})
 	sectionLabel(c, "轻提示")
 	ui.Column(c.Key("visual-settings")).Background(white).Radius(16).Border(1, line).Padding(3, 20).Dividers(1, line).Children(func() {
-		v.settingRow(c.Key("hint"), iconEye, "显示快捷键提示", "在鼠标所在屏幕的右下角闪现，不抢焦点，也不拦截点击。", v.state.Settings.ShowOverlay, func(on bool) {
+		v.settingRow(c.Key("hint"), iconEye, "显示快捷键提示", "在鼠标所在屏幕的右下角闪现，小巧、不抢焦点，也不拦截点击。", v.state.Settings.ShowOverlay, func(on bool) {
 			v.save(func(s *Settings) { s.ShowOverlay = on })
 		})
 		ui.Row(c.Key("duration")).Padding(15, 0).Gap(12).Children(func() {
@@ -487,52 +506,58 @@ func (v *nativeView) editor(c *ui.Context) {
 	wasEditing := v.editing
 	dialog := ui.DialogBase(c.Key("shortcut-editor"), &v.editing, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(24, 35, 53, .22))
-		panel.Width(514).MaxWidthPercent(94).Padding(28).Gap(17).Radius(23).Background(white).Border(1, line).
+		_, availableHeight := c.Size()
+		panel.Width(530).MaxWidthPercent(94).Height(min(668, availableHeight*.94)).Padding(24).Gap(13).Radius(23).Background(white).Border(1, line).
 			Shadow(0, 18, 60, 0, ui.RGBA(15, 27, 47, .17))
-		ui.Row(c).Children(func() {
-			iconTile(c, iconKeyboard, blue, 43)
-			ui.Spacer(c)
-			if iconButton(c.Key("cancel-x"), iconClose, "取消编辑").Disabled(v.busy).Clicked() {
-				v.cancelEditor()
-			}
-		})
-		ui.Column(c).Gap(6).Children(func() {
-			ui.Text(c, "为"+name+"设置快捷键").FontSize(21).FontWeight(650)
-			ui.Text(c, "一个按键，或一个组合。按你的习惯来。").FontSize(12).TextColor(muted)
-		})
-		if ui.Segmented(c.Key("record-mode"), &v.editMode, "键盘录制", "手动选择").Label("设置方式").Disabled(v.busy).Changed() {
-			v.capture = v.editMode == 0
-			if v.capture {
-				v.captured = false
-				v.captureFocus.Focus()
-			} else {
-				v.syncManualQuery()
-			}
-		}
-		if v.editMode == 0 {
-			v.captureArea(c)
-		} else {
-			ui.Box(c).Padding(19).Center().Radius(13).Background(canvas).Children(func() {
-				keycaps(c, v.editKeys, v.state.Status.Platform, 24)
+		ui.Scroll(c.Key("editor-body")).Grow(1).MinHeight(0).Gap(13).Padding(0, 4, 2, 0).Children(func() {
+			ui.Row(c).Children(func() {
+				iconTile(c, iconKeyboard, blue, 43)
+				ui.Spacer(c)
+				if iconButton(c.Key("cancel-x"), iconClose, "取消编辑").Disabled(v.busy).Clicked() {
+					v.cancelEditor()
+				}
 			})
-			v.manualKeys(c)
-		}
-		sectionLabel(c, "或从常用操作开始")
-		ui.Row(c).Wrap().Gap(7).Children(func() {
-			for _, preset := range shortcutPresets(v.state.Status.Platform) {
-				if ui.Button(c.Key(preset.name), preset.name).FontSize(11).Padding(7, 11).Disabled(v.busy).Clicked() {
-					v.editKeys = slices.Clone(preset.keys)
-					v.capture, v.captured, v.editError = false, true, ""
+			ui.Column(c).Gap(6).Children(func() {
+				ui.Text(c, "为"+name+"设置快捷键").FontSize(21).FontWeight(650)
+				ui.Text(c, "一个按键，或一个组合。按你的习惯来。").FontSize(12).TextColor(muted)
+			})
+			if ui.Segmented(c.Key("record-mode"), &v.editMode, "键盘录制", "手动选择").Label("设置方式").Disabled(v.busy).Changed() {
+				v.capture = v.editMode == 0
+				v.recorder.reset()
+				if v.capture {
+					v.captured = false
+					v.captureFocus.Focus()
+				} else {
 					v.syncManualQuery()
 				}
 			}
+			if v.editMode == 0 {
+				v.captureArea(c)
+			} else {
+				ui.Box(c).FillWidth().Padding(16).Center().Radius(13).Background(canvas).Children(func() {
+					keycaps(c, v.editKeys, v.state.Status.Platform, 24).FillWidth().Justify(ui.Center)
+				})
+				v.manualKeys(c)
+			}
+			v.inputMethodChoice(c.Key("input-method-choice"))
+			sectionLabel(c, "或从常用操作开始")
+			ui.Row(c).Wrap().Gap(7).Children(func() {
+				for _, preset := range shortcutPresets(v.state.Status.Platform) {
+					if ui.Button(c.Key(preset.name), preset.name).FontSize(11).Padding(7, 11).Disabled(v.busy).Clicked() {
+						v.editKeys = slices.Clone(preset.keys)
+						v.capture, v.captured, v.editError = false, true, ""
+						v.recorder.reset()
+						v.syncManualQuery()
+					}
+				}
+			})
+			message, color := "编辑期间暂停映射。特殊键、仅修饰键可通过手动选择设置。", muted
+			if v.editError != "" {
+				message, color = v.editError, ui.Hex("#bf4b46")
+			}
+			ui.Text(c, message).FontSize(10).TextColor(color).Selectable()
 		})
-		message, color := "编辑期间暂停映射。特殊键、仅修饰键可通过手动选择设置。", muted
-		if v.editError != "" {
-			message, color = v.editError, ui.Hex("#bf4b46")
-		}
-		ui.Text(c, message).FontSize(10).TextColor(color).Selectable()
-		ui.Row(c).Gap(9).Justify(ui.End).Children(func() {
+		ui.Row(c).Gap(9).Justify(ui.End).Shrink(0).Children(func() {
 			if ui.Button(c, "取消").Padding(10, 19).Disabled(v.busy).Clicked() {
 				v.cancelEditor()
 			}
@@ -561,41 +586,17 @@ func (v *nativeView) captureArea(c *ui.Context) {
 		Label("快捷键录制区域").Disabled(v.busy)
 	if area.Clicked() {
 		v.capture, v.captured, v.editError = true, false, ""
-		v.lastMods = 0
+		v.recorder.reset()
 		v.captureFocus.Focus()
 	}
-	if area.Focused() && v.capture {
-		mods := c.Modifiers()
-		if !v.captured && mods != 0 && mods != v.lastMods {
-			v.editKeys = modifierKeys(mods)
+	if area.Focused() && v.capture && !v.busy {
+		if keys := v.recorder.modifiers(c.Modifiers()); len(keys) != 0 {
+			v.editKeys, v.captured, v.editError = keys, true, ""
 		}
-		v.lastMods = mods
+	} else {
+		v.recorder.reset()
 	}
-	area.HandleInput(func(event ui.InputEvent) bool {
-		if !v.capture || v.busy {
-			return false
-		}
-		if event.Kind == ui.InputKeyUp || event.Kind == ui.InputText || event.Kind == ui.InputCompose {
-			return true
-		}
-		if event.Kind != ui.InputKeyDown {
-			return false
-		}
-		if event.Repeat {
-			return true
-		}
-		if event.Key == ui.KeyEscape && event.Mods == 0 {
-			v.cancelEditor()
-			return true
-		}
-		keys, err := recordedKeys(event)
-		if err != nil {
-			v.editError = err.Error()
-			return true
-		}
-		v.editKeys, v.captured, v.editError = keys, true, ""
-		return true
-	}).Children(func() {
+	area.HandleInput(v.recordInput).Children(func() {
 		hint := "点击这里，开始录制"
 		if v.capture {
 			hint = "正在聆听你的键盘"
@@ -612,6 +613,38 @@ func (v *nativeView) captureArea(c *ui.Context) {
 		keycaps(c, v.editKeys, v.state.Status.Platform, 26)
 		ui.Text(c, "按下想要的快捷键 · Esc 取消编辑").FontSize(10).TextColor(muted)
 	})
+}
+
+func (v *nativeView) recordInput(event ui.InputEvent) bool {
+	if !v.capture || v.busy {
+		v.recorder.reset()
+		return false
+	}
+	if event.Kind == ui.InputKeyUp {
+		v.recorder.release(event)
+		return true
+	}
+	if event.Kind == ui.InputText || event.Kind == ui.InputCompose {
+		return true
+	}
+	if event.Kind != ui.InputKeyDown {
+		return false
+	}
+	if event.Repeat {
+		return true
+	}
+	if event.Key == ui.KeyEscape && event.Mods == 0 {
+		v.cancelEditor()
+		return true
+	}
+	v.recorder.press(event)
+	keys, err := recordedKeys(event)
+	if err != nil {
+		v.editError = err.Error()
+		return true
+	}
+	v.editKeys, v.captured, v.editError = keys, true, ""
+	return true
 }
 
 func (v *nativeView) manualKeys(c *ui.Context) {
@@ -710,47 +743,20 @@ func (v *nativeView) helpDialog(c *ui.Context) {
 
 func (v *nativeView) overlay(c *ui.Context) {
 	nativeTheme(c)
-	c.Root().Background(clear)
+	c.Root().Background(overlayBackground())
 	if v.lastEvent.Sequence == 0 {
 		return
 	}
-	if v.overlaySequence != v.lastEvent.Sequence {
-		v.overlaySequence, v.overlayAt = v.lastEvent.Sequence, c.Now()
-	}
-	elapsed := c.Now().Sub(v.overlayAt)
-	duration := time.Duration(v.lastEvent.Duration) * time.Millisecond
-	opacity := float32(1)
-	if !c.Preferences().ReduceMotion {
-		opacity = min(1, float32(elapsed)/float32(100*time.Millisecond))
-		if remaining := duration - elapsed; remaining < 150*time.Millisecond {
-			opacity = min(opacity, max(0, float32(remaining)/float32(150*time.Millisecond)))
-		}
-		if elapsed < duration {
-			c.AnimationFrame()
-		}
-	}
-	ui.Box(c).Fill().Padding(12).Center().Children(func() {
-		ui.Row(c.Key("shortcut-toast")).FillWidth().Gap(12).Padding(14, 17).Radius(18).Background(white.Alpha(.97)).Border(1, line).
-			Opacity(opacity).Shadow(0, 4, 12, 0, ui.RGBA(28, 40, 60, .1)).Children(func() {
-			ui.Icon(c, iconMouse).FontSize(22).TextColor(blue)
-			ui.Column(c).Grow(1).Gap(6).Children(func() {
-				label := "后退侧键"
-				if v.lastEvent.Button == input.Forward {
-					label = "前进侧键"
-				}
-				if v.lastEvent.Preview {
-					label = "快捷键预览"
-				}
-				ui.Text(c, label).FontSize(9).TextColor(muted)
-				keycaps(c, v.lastEvent.Keys, v.state.Status.Platform, 13)
-			})
-			ui.Icon(c, iconCheck).FontSize(14).TextColor(green)
-		})
+	ui.Row(c.Key("shortcut-toast")).Fill().Gap(9).Padding(8, 12).Radius(overlayRadius).
+		Background(white).Border(1, line).AlignItems(ui.Center).Justify(ui.Center).Children(func() {
+		ui.Icon(c, iconMouse).FontSize(14).TextColor(blue)
+		ui.Text(c, describeKeys(v.lastEvent.Keys, v.state.Status.Platform)).
+			Font(overlayFont).FontSize(overlayFontSize).FontWeight(600).TextColor(ink).NoWrap()
 	})
 }
 
-func keycaps(c *ui.Context, keys []string, platform string, size float32) {
-	ui.Row(c).Gap(5).Wrap().Children(func() {
+func keycaps(c *ui.Context, keys []string, platform string, size float32) ui.Element {
+	return ui.Row(c).Gap(5).Wrap().Children(func() {
 		if len(keys) == 0 {
 			ui.Text(c, "尚未设置").FontSize(size).TextColor(muted)
 		}

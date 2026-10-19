@@ -63,6 +63,56 @@ func modifierKeys(mods ui.Modifiers) []string {
 	return keys
 }
 
+type shortcutRecorder struct {
+	mods     ui.Modifiers
+	held     map[ui.Key]bool
+	ordinary bool
+}
+
+func (r *shortcutRecorder) reset() {
+	*r = shortcutRecorder{}
+}
+
+func (r *shortcutRecorder) modifiers(mods ui.Modifiers) []string {
+	added := mods &^ r.mods
+	r.mods = mods
+	r.endGesture()
+	// Releases preserve the chord. New presses use the current simultaneous
+	// set, never a union of modifiers that may not have overlapped.
+	if added == 0 || r.ordinary {
+		return nil
+	}
+	return modifierKeys(mods)
+}
+
+func recordingKey(event ui.InputEvent) ui.Key {
+	if event.PhysicalKey != ui.KeyUnknown {
+		return event.PhysicalKey
+	}
+	return event.Key
+}
+
+func (r *shortcutRecorder) press(event ui.InputEvent) {
+	if r.held == nil {
+		r.held = make(map[ui.Key]bool)
+	}
+	r.held[recordingKey(event)] = true
+	r.mods, r.ordinary = event.Mods, true
+}
+
+func (r *shortcutRecorder) release(event ui.InputEvent) {
+	delete(r.held, recordingKey(event))
+	r.mods = event.Mods
+	r.endGesture()
+}
+
+func (r *shortcutRecorder) endGesture() {
+	// An ordinary chord survives modifier changes until every key is up.
+	if r.mods == 0 && len(r.held) == 0 {
+		r.ordinary = false
+	}
+}
+
 func physicalCode(key ui.Key) string {
 	switch {
 	case key >= ui.KeyA && key <= ui.KeyZ:
@@ -84,11 +134,7 @@ func physicalCode(key ui.Key) string {
 }
 
 func recordedKeys(event ui.InputEvent) ([]string, error) {
-	key := event.PhysicalKey
-	if key == ui.KeyUnknown {
-		key = event.Key
-	}
-	code := physicalCode(key)
+	code := physicalCode(recordingKey(event))
 	if code == "" {
 		return nil, fmt.Errorf("这个按键暂不能直接录制，请使用手动选择")
 	}

@@ -2,11 +2,14 @@
 package input
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
 	"slices"
 	"sync"
+
+	"github.com/fondoger/mouse-mapper/internal/inputmethod"
 )
 
 const (
@@ -15,8 +18,10 @@ const (
 )
 
 type Binding struct {
-	Enabled bool     `json:"enabled"`
-	Keys    []string `json:"keys"`
+	Enabled         bool     `json:"enabled"`
+	Keys            []string `json:"keys"`
+	InputMethod     string   `json:"inputMethod,omitempty"`
+	InputMethodName string   `json:"inputMethodName,omitempty"`
 }
 
 type Config struct {
@@ -116,6 +121,9 @@ func normalizeConfig(config Config) (Config, error) {
 		name    string
 		binding *Binding
 	}{{Back, &config.Back}, {Forward, &config.Forward}} {
+		if err := inputmethod.ValidateSelection(item.binding.InputMethod, item.binding.InputMethodName); err != nil {
+			return Config{}, fmt.Errorf("%s mapping: %w", item.name, err)
+		}
 		keys, err := NormalizeKeys(item.binding.Keys)
 		if err != nil {
 			return Config{}, fmt.Errorf("%s mapping: %w", item.name, err)
@@ -137,6 +145,13 @@ type nativeDriver interface {
 	supports(code string) bool
 }
 
+// Windows input injection must run on its hook thread. Waiting for that thread
+// while holding the engine mutex can deadlock a concurrent hardware callback.
+// A dispatcher returns only after work finishes or is irrevocably discarded.
+type inputThreadDispatcher interface {
+	runOnInputThread(context.Context, func() error) error
+}
+
 type keyReference struct {
 	count int
 	owned bool
@@ -156,13 +171,18 @@ type Engine struct {
 	onTrigger     func(Trigger)
 	nativeFailure uint64
 	nativeError   error
+	captureFocus  func() (inputmethod.Focus, error)
+	prepareQueue  []*preparedPress
+	preparing     map[*preparedPress]struct{}
+	pendingButton map[string]*preparedPress
+	prepareWorker bool
 }
 
 func New(onTrigger func(Trigger)) *Engine {
 	e := &Engine{
 		status: Status{Platform: runtime.GOOS, Message: "Input service has not started"},
 		active: map[string][]string{}, references: map[string]*keyReference{},
-		onTrigger: onTrigger,
+		onTrigger: onTrigger, captureFocus: inputmethod.CaptureFocus,
 	}
 	e.driver = newNativeDriver(e)
 	return e
@@ -183,17 +203,25 @@ func (e *Engine) Apply(config Config) error {
 			return errors.New("Windows does not allow apps to simulate the secure Control+Alt+Delete shortcut")
 		}
 	}
+	e.lifecycle.Lock()
+	defer e.lifecycle.Unlock()
 	e.mu.Lock()
-	defer e.mu.Unlock()
 	if equalConfig(e.config, normalized) {
+		e.mu.Unlock()
 		return nil
 	}
-	// Keep the active button entries until their physical releases arrive.
-	if err := e.releaseAllLocked(); err != nil {
-		return err
-	}
-	e.config = normalized
-	return nil
+	e.cancelPreparedLocked()
+	e.mu.Unlock()
+	return e.onInputThread(context.Background(), func() error {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		// Keep the active button entries until their physical releases arrive.
+		if err := e.releaseAllLocked(); err != nil {
+			return err
+		}
+		e.config = normalized
+		return nil
+	})
 }
 
 func (e *Engine) Start() error {
@@ -204,14 +232,21 @@ func (e *Engine) Start() error {
 		e.mu.Unlock()
 		return nil
 	}
-	if err := e.releaseAllLocked(); err != nil {
-		e.mu.Unlock()
+	e.mu.Unlock()
+	var failureGeneration uint64
+	if err := e.onInputThread(context.Background(), func() error {
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		if err := e.releaseAllLocked(); err != nil {
+			return err
+		}
+		// A release may have happened while the native hook was not installed.
+		e.active = map[string][]string{}
+		failureGeneration = e.nativeFailure
+		return nil
+	}); err != nil {
 		return err
 	}
-	// A release may have happened while the native hook was not installed.
-	e.active = map[string][]string{}
-	failureGeneration := e.nativeFailure
-	e.mu.Unlock()
 	err := e.driver.start()
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -239,11 +274,26 @@ func (e *Engine) Stop() error {
 	e.lifecycle.Lock()
 	defer e.lifecycle.Unlock()
 	e.mu.Lock()
-	err := e.releaseAllLocked()
+	// Cancel immediately, without joining an IME worker that may be waiting on
+	// the UI thread which called Stop during application shutdown.
+	e.cancelPreparedLocked()
 	e.status.Running = false
 	e.status.Message = "Input service stopped"
 	e.mu.Unlock()
+	cleanupRan := false
+	cleanup := func() error {
+		cleanupRan = true
+		e.mu.Lock()
+		defer e.mu.Unlock()
+		return e.releaseAllLocked()
+	}
+	err := e.onInputThread(context.Background(), cleanup)
 	stopErr := e.driver.stop()
+	if err != nil && !cleanupRan && stopErr == nil {
+		// A stalled queue may have rejected cleanup, then stopped successfully.
+		// Retry only after native shutdown makes offline injection safe.
+		err = e.onInputThread(context.Background(), cleanup)
+	}
 	e.mu.Lock()
 	if stopErr == nil {
 		e.active = map[string][]string{}
@@ -256,6 +306,16 @@ func (e *Engine) Stop() error {
 	}
 	e.mu.Unlock()
 	return errors.Join(err, stopErr)
+}
+
+func (e *Engine) onInputThread(ctx context.Context, work func() error) error {
+	if dispatcher, ok := e.driver.(inputThreadDispatcher); ok {
+		return dispatcher.runOnInputThread(ctx, work)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return work()
 }
 
 func (e *Engine) Status() Status {
@@ -295,6 +355,10 @@ func (e *Engine) mouseButton(button string, down bool) bool {
 		if !active {
 			return false
 		}
+		if pending := e.pendingButton[button]; pending != nil {
+			pending.down = false
+			delete(e.pendingButton, button)
+		}
 		delete(e.active, button)
 		if err := e.releaseKeysLocked(keys); err != nil {
 			e.status.Message = err.Error()
@@ -320,13 +384,27 @@ func (e *Engine) mouseButton(button string, down bool) bool {
 	if !binding.Enabled {
 		return false
 	}
-	if err := e.retryPendingReleasesLocked(); err != nil {
+	if binding.InputMethod != "" {
+		return e.preparePressLocked(button, binding)
+	}
+	pressed, err := e.pressKeysLocked(binding.Keys)
+	if err != nil {
 		e.status.Message = err.Error()
 		e.status.Error = err.Error()
+		// Fail open: neither half of this mouse click is swallowed.
 		return false
 	}
-	pressed := make([]string, 0, len(binding.Keys))
-	for _, code := range binding.Keys {
+	e.active[button] = pressed
+	e.triggerLocked(button, binding.Keys)
+	return true
+}
+
+func (e *Engine) pressKeysLocked(keys []string) ([]string, error) {
+	if err := e.retryPendingReleasesLocked(); err != nil {
+		return nil, err
+	}
+	pressed := make([]string, 0, len(keys))
+	for _, code := range keys {
 		if ref := e.references[code]; ref != nil {
 			ref.count++
 			pressed = append(pressed, code)
@@ -338,23 +416,22 @@ func (e *Engine) mouseButton(button string, down bool) bool {
 			if err := e.driver.sendKey(code, true, e.heldModifiersLocked()); err != nil {
 				delete(e.references, code)
 				releaseErr := e.releaseKeysLocked(pressed)
-				e.status.Message = errors.Join(err, releaseErr).Error()
-				e.status.Error = e.status.Message
-				// Fail open: neither half of this mouse click is swallowed.
-				return false
+				return nil, errors.Join(err, releaseErr)
 			}
 		}
 		pressed = append(pressed, code)
 	}
-	e.active[button] = pressed
+	return pressed, nil
+}
+
+func (e *Engine) triggerLocked(button string, keys []string) {
 	e.status.Message = "Listening for mouse side buttons"
 	e.status.Error = ""
 	if e.onTrigger != nil {
-		trigger := Trigger{Button: button, Keys: slices.Clone(binding.Keys)}
-		// Native hook callbacks must never wait for the webview or an overlay.
+		trigger := Trigger{Button: button, Keys: slices.Clone(keys)}
+		// Native hook callbacks must never wait for the interface or an overlay.
 		go e.onTrigger(trigger)
 	}
-	return true
 }
 
 // physicalKey is called only for hardware keyboard events. Keeping a physical
@@ -434,6 +511,7 @@ func (e *Engine) retryPendingReleasesLocked() error {
 }
 
 func (e *Engine) releaseAllLocked() error {
+	e.cancelPreparedLocked()
 	// Release ordinary keys before modifiers even if both buttons share a chord.
 	keys := make([]string, 0, len(e.references))
 	for _, modifier := range modifiers {
@@ -470,7 +548,10 @@ func (e *Engine) heldModifiersLocked() []string {
 }
 
 func equalConfig(a, b Config) bool {
-	return a.Enabled == b.Enabled && a.Back.Enabled == b.Back.Enabled &&
-		a.Forward.Enabled == b.Forward.Enabled && slices.Equal(a.Back.Keys, b.Back.Keys) &&
-		slices.Equal(a.Forward.Keys, b.Forward.Keys)
+	return a.Enabled == b.Enabled && equalBinding(a.Back, b.Back) && equalBinding(a.Forward, b.Forward)
+}
+
+func equalBinding(a, b Binding) bool {
+	return a.Enabled == b.Enabled && slices.Equal(a.Keys, b.Keys) &&
+		a.InputMethod == b.InputMethod && a.InputMethodName == b.InputMethodName
 }
