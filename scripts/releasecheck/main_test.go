@@ -19,6 +19,7 @@ func testConfig(t *testing.T) (configuration, ed25519.PrivateKey) {
 		t.Fatal(err)
 	}
 	config := configuration{Name: "Mouse Mapper", Version: "0.1.0"}
+	config.MacOS.MinimumSystemVersion = "13.0"
 	config.Updates.GitHub = "fondoger/mouse-mapper"
 	config.Updates.TagPrefix = "v"
 	config.Updates.PublicKey = base64.StdEncoding.EncodeToString(public)
@@ -53,6 +54,15 @@ func addTargetNamed(t *testing.T, config configuration, key ed25519.PrivateKey, 
 	t.Helper()
 	archiveName := "mouse-mapper-" + config.Version + "-" + target + ".tar.gz"
 	data := []byte("fixture archive for " + target)
+	if strings.HasPrefix(target, "darwin-") {
+		program := macFixtureMachO(macFixtureARM64, macFixtureBuildVersion(macFixture13))
+		if target == "darwin-amd64" {
+			program = macFixtureMachO(macFixtureAMD64, macFixtureBuildVersion(macFixture13))
+		} else if target == "darwin-universal" {
+			program = macFixtureUniversal(macFixtureMachO(macFixtureAMD64, macFixtureBuildVersion(macFixture13)), program)
+		}
+		data = macFixtureBundle(t, config.Name, config.MacOS.MinimumSystemVersion, program)
+	}
 	putFile(t, filepath.Join(directory, archiveName), data)
 	digest := sha256.Sum256(data)
 	update := manifest{

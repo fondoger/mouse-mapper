@@ -30,6 +30,9 @@ var repositoryPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
 type configuration struct {
 	Name    string `json:"name"`
 	Version string `json:"version"`
+	MacOS   struct {
+		MinimumSystemVersion string `json:"minimumSystemVersion"`
+	} `json:"macos"`
 	Updates struct {
 		GitHub     string `json:"github"`
 		PublicKey  string `json:"publicKey"`
@@ -119,6 +122,9 @@ func validateConfig(config configuration, tag, repository string) (ed25519.Publi
 	if !versionPattern.MatchString(config.Version) {
 		return nil, errors.New("version must be a semantic version without a leading v")
 	}
+	if _, err := parseMacVersion(config.MacOS.MinimumSystemVersion); err != nil {
+		return nil, fmt.Errorf("macos.minimumSystemVersion: %w", err)
+	}
 	if config.Updates.TagPrefix != "v" {
 		return nil, errors.New("updates.tagPrefix must be v for this release workflow")
 	}
@@ -180,6 +186,11 @@ func verifyAssets(config configuration, key ed25519.PublicKey, directory string,
 		archive, err := verifySignedFile(config, key, folder, update.signedFile, "-"+config.Version+"-"+target+".tar.gz")
 		if err != nil {
 			return nil, fmt.Errorf("%s: %w", name, err)
+		}
+		if strings.HasPrefix(target, "darwin-") {
+			if err := verifyMacMinimum(config, filepath.Join(folder, archive.Name)); err != nil {
+				return nil, fmt.Errorf("%s: %w", name, err)
+			}
 		}
 		manifestDigest := sha256.Sum256(data)
 		assets = append(assets, asset{Name: name, Digest: manifestDigest[:]}, archive)

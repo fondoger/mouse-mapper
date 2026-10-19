@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 - 2026-10-19
+
+- Correct the declared minimum macOS version to 13.0 to match the actual Mach-O deployment target produced by Go 1.27. Earlier packages declared 12.0 in their Info.plist, but that did not make those binaries compatible with macOS 12.
+- Add a release gate that compares the configured minimum macOS version, application Info.plist and every Mach-O slice, including universal packages, before publication.
+- Retain all 0.2.0 recording, compact bottom-right feedback and optional input-method features. Windows behavior is unchanged.
+
 ## 0.2.0 - 2026-10-19
 
 - Move shortcut feedback to the bottom-right of the pointer's display work area, not the application window's top-left; respect monitor origins, usable bounds and Windows DPI.

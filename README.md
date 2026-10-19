@@ -25,11 +25,11 @@
 | 平台 | 安装包 | 输入实现与运行要求 |
 | --- | --- | --- |
 | Windows 10 / 11，x64 / ARM64 | `Mouse.Mapper.Setup.….amd64.exe` / `….arm64.exe` | `WH_MOUSE_LL` + `SendInput`；不需要 WebView2。普通权限应用不能向高权限窗口或安全桌面注入按键。 |
-| macOS 12+，Apple silicon / Intel | 通用 `.dmg`，另提供 `arm64` / `amd64` 包 | `CGEventTap` + `CGEventPost`；需要辅助功能与输入监控授权。 |
+| macOS 13+，Apple silicon / Intel | 通用 `.dmg`，另提供 `arm64` / `amd64` 包 | `CGEventTap` + `CGEventPost`；需要辅助功能与输入监控授权。 |
 
 从 [Releases](https://github.com/fondoger/mouse-mapper/releases) 下载对应安装包：Windows 运行安装程序；macOS 打开 DMG 并将应用拖入 Applications，然后从 Applications 启动。首次在 macOS 使用时，在「系统设置 → 隐私与安全性」中的「辅助功能」和「输入监控」允许 Mouse Mapper，按应用提示重试或重新启动。
 
-GitHub 会将安装包文件名中的空格改为点号，例如本地的 `Mouse Mapper Setup 0.2.0 amd64.exe` 下载后为 `Mouse.Mapper.Setup.0.2.0.amd64.exe`，通用 macOS 包为 `Mouse.Mapper.0.2.0.dmg`。校验和清单使用下载后的实际文件名。
+GitHub 会将安装包文件名中的空格改为点号，例如本地的 `Mouse Mapper Setup 0.2.1 amd64.exe` 下载后为 `Mouse.Mapper.Setup.0.2.1.amd64.exe`，通用 macOS 包为 `Mouse.Mapper.0.2.1.dmg`。校验和清单使用下载后的实际文件名。当前 Go 工具链生成的 Mac 程序最低需要 macOS 13；旧包元信息中曾写的 12.0 不代表支持 macOS 12，0.2.1 已修正声明。
 
 **签名说明：** 更新归档使用 Ed25519 签名，但这与操作系统代码签名是两回事。目前 Windows 安装程序未做代码签名，macOS 使用 ad-hoc 签名，未配置 Developer ID 或 Apple 公证。SmartScreen / Gatekeeper 可能拦截下载的构建；请核对来源与 `SHA256SUMS.txt`，不要全局关闭系统安全保护。macOS 可选择本机从源码构建，或等待已公证的发行版。macOS 更新后也可能需要重新确认辅助功能授权。
 
@@ -109,7 +109,7 @@ MyGo 默认 `CGO_ENABLED=0`。Windows 打包会按需下载并校验 NSIS；首�
 
 应用处理鼠标侧键与物理按键的按下 / 释放状态，防止映射后修饰键卡住；**不记录键入内容，不上传按键数据，没有账户或遥测服务**。自动更新会通过 HTTPS 访问 GitHub 获取版本信息与更新文件，可在设置中关闭后台检查。
 
-「开机自启」实际指当前用户登录时启动：Windows 使用用户 Run 项，macOS 13+ 使用系统登录项，macOS 12 使用 LaunchAgent；macOS 可能需要在系统设置中批准登录项。请在稳定的安装位置开启，移动或卸载应用前先关闭。自启动设置属于系统，不受测试配置目录隔离。
+「开机自启」实际指当前用户登录时启动：Windows 使用用户 Run 项，受支持的 macOS 13+ 使用系统登录项，可能需要在系统设置中批准。请在稳定的安装位置开启，移动或卸载应用前先关闭。自启动设置属于系统，不受测试配置目录隔离。
 
 ## 自动发布
 
@@ -118,7 +118,7 @@ MyGo 默认 `CGO_ENABLED=0`。Windows 打包会按需下载并校验 NSIS；首�
 1. 仓库管理员将现有更新私钥保存在 GitHub Actions Secret **`MYGO_UPDATER_PRIVATE_KEY`** 中，公钥保留在 `mygo.json` 的 `updates.publicKey`。私钥不要进入仓库、命令日志或构建产物，并另行安全备份。已经发布应用后，不要随意更换密钥。
 2. 修改 `mygo.json` 的版本与 `CHANGELOG.md`，运行测试并提交，然后推送对应版本标签。
 3. Actions 验证标签、仓库与密钥匹配，创建暂存草稿；在 Windows 和 macOS runner 上测试、打包，用 `go tool mygo build -upload` 上传安装包和签名更新文件。
-4. 最终任务重新下载并验证全部安装包、五个更新通道、归档大小和 Ed25519 签名，生成 `SHA256SUMS.txt` 后**自动公开发布**。普通版本成为 latest；带预发布后缀的版本标记为 prerelease，不替换稳定版更新源。
+4. 最终任务重新下载并验证全部安装包、五个更新通道、归档大小和 Ed25519 签名，并核对 macOS 最低系统版本声明与实际程序的每个架构切片，生成 `SHA256SUMS.txt` 后**自动公开发布**。普通版本成为 latest；带预发布后缀的版本标记为 prerelease，不替换稳定版更新源。
 
 提供 `windows-amd64`、`windows-arm64`、`darwin-amd64`、`darwin-arm64`、`darwin-universal` 五个更新清单，保证单架构与通用版都能继续更新。失败的流水线只留下未公开草稿；不会自动暴露残缺更新，也不会覆盖已经公开的发行版。尚无旧版更新归档时，不会生成增量更新文件。
 
@@ -126,9 +126,9 @@ MyGo 默认 `CGO_ENABLED=0`。Windows 打包会按需下载并校验 NSIS；首�
 
 Mouse Mapper is a quiet **Windows and macOS** utility built entirely in Go with **MyGo Native UI**. Map the back and forward mouse buttons to a key, shortcut, or held modifier; run in the background, hide the tray icon, launch at login, and optionally show brief, non-interactive shortcut feedback. The compact, single-line overlay sits at the **bottom-right of the usable desktop on the pointer's display**; ordinary shortcuts take about `112 × 38 DIP`, with additional width only for longer combinations. Windows uses a native rounded window region to avoid a black rectangular background. Reopening the app restores its existing window. There is no webview, JavaScript runtime, or frontend build chain.
 
-**Install:** choose a Windows x64 / ARM64 installer or the universal macOS DMG from [Releases](https://github.com/fondoger/mouse-mapper/releases). macOS 12+ requires Accessibility and Input Monitoring permissions. Windows integrity boundaries and other mouse software can prevent injection. Windows installers are not code-signed; macOS builds are ad-hoc signed, not Developer ID signed or notarized. Update signing does not replace OS code signing. Never disable system-wide security protections to run the app.
+**Install:** choose a Windows x64 / ARM64 installer or the universal macOS DMG from [Releases](https://github.com/fondoger/mouse-mapper/releases). macOS 13+ requires Accessibility and Input Monitoring permissions. Windows integrity boundaries and other mouse software can prevent injection. Windows installers are not code-signed; macOS builds are ad-hoc signed, not Developer ID signed or notarized. Update signing does not replace OS code signing. Never disable system-wide security protections to run the app.
 
-GitHub replaces spaces with dots in installer filenames: for example, `Mouse.Mapper.Setup.0.2.0.amd64.exe` or `Mouse.Mapper.0.2.0.dmg`. Published checksums use these actual download names; local build filenames retain spaces.
+GitHub replaces spaces with dots in installer filenames: for example, `Mouse.Mapper.Setup.0.2.1.amd64.exe` or `Mouse.Mapper.0.2.1.dmg`. Published checksums use these actual download names; local build filenames retain spaces. The current Go toolchain emits a macOS 13 deployment target. Earlier packages' 12.0 Info.plist value did not provide macOS 12 compatibility; 0.2.1 corrects that declaration.
 
 **Input method before shortcut:** each side button can optionally select an installed, enabled input method before sending its shortcut. The default is to leave the current input method unchanged. Choose the target in the native shortcut editor, then map the button to the hotkey configured in that input method's own voice-input settings; there is no universal WeChat/Doubao voice shortcut. Installation, enablement, vendor voice settings and microphone access remain the user's responsibility. Preview only displays feedback: it never changes the input method or injects keys.
 

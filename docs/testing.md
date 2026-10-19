@@ -78,7 +78,7 @@ Use an installed, enabled input method and a disposable document. These are expl
 - [ ] Launch the installed `.app` without Accessibility / Input Monitoring permission; mapping stays inactive and the native UI explains how to grant the required permissions.
 - [ ] Grant both permissions and retry or relaunch. Verify both physical buttons and the overlay without focus theft.
 - [ ] Revoke permission during use; input fails safely. Restore permission and verify recovery.
-- [ ] Verify macOS 13+ login item registration and approval in System Settings; macOS 12 uses a LaunchAgent.
+- [ ] Verify login item registration and approval in System Settings on supported macOS 13+ installations.
 - [ ] Test both Apple silicon and Intel hardware before marking both runtime-verified. Check that a universal package runs on each.
 - [ ] Report Gatekeeper, code-signing and notarization status accurately. Recheck Accessibility authorization after replacing the app with an update.
 
@@ -100,7 +100,7 @@ Use an installed, enabled input method and a disposable document. These are expl
 go test ./...
 go vet ./...
 go build -tags mygo_noinspector ./...
-go run ./scripts/releasecheck -tag v0.2.0 -repository fondoger/mouse-mapper
+go run ./scripts/releasecheck -tag v0.2.1 -repository fondoger/mouse-mapper
 ```
 
 The last example must use the version currently in `mygo.json`. To render native snapshots, set `MOUSE_MAPPER_UI_SNAPSHOTS` to an output directory and run:
@@ -140,7 +140,7 @@ Repeat with `MYGO_GPU=0`, then restore both environment variables. The test brie
 - [ ] `mygo.json`, `CHANGELOG.md`, the tag and installed application version agree.
 - [ ] `MYGO_UPDATER_PRIVATE_KEY` is present in Actions secrets, matches the committed public key, and never appears in logs or artifacts.
 - [ ] Windows and macOS jobs pass native tests and produce every intended package.
-- [ ] Before publishing, the final workflow verifies all five manifests, their version/repository/target, each archive/delta size and Ed25519 signature, and each expected installer.
+- [ ] Before publishing, the final workflow verifies all five manifests, their version/repository/target, each archive/delta size and Ed25519 signature, and each expected installer. For macOS it also checks the configured minimum OS, Info.plist and every Mach-O slice; a plist must not promise a system older than its binaries support.
 - [ ] Validate `SHA256SUMS.txt` against downloaded assets. Check that licenses ship inside the application resources.
 - [ ] Confirm the successful workflow makes the complete release public automatically, while failed builds leave only an inaccessible-to-updaters draft.
 - [ ] Document actual hardware coverage and known limitations. Signed update archives are not the same as OS-signed or notarized installers.
