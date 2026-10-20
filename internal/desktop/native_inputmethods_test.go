@@ -27,6 +27,9 @@ func TestNativeEditorSavesInputMethodBeforeShortcut(t *testing.T) {
 	tt.Key(ui.Ctrl|ui.Shift, ui.KeySpace)
 	click(t, tt, "选择触发前的输入法")
 	click(t, tt, "微信输入法")
+	if !tt.HasText("已是目标则不切换") || !tt.HasText("切换失败时不发送按键") {
+		t.Fatal("the editor did not explain the exact-current skip and fail-closed behavior")
+	}
 	click(t, tt, "保存快捷键")
 	binding := m.state.Settings.Back
 	if binding.InputMethod != "test:wechat" || binding.InputMethodName != "微信输入法" || !slices.Equal(binding.Keys, []string{"Control", "Shift", "Space"}) {
@@ -76,6 +79,9 @@ func TestNativeEditorCanDisableInputMethodSwitch(t *testing.T) {
 	click(t, tt, "编辑前进键")
 	click(t, tt, "选择触发前的输入法")
 	click(t, tt, "不切换（保持当前输入法）")
+	if !tt.HasText("保持当前输入法，直接发送快捷键") {
+		t.Fatal("opting out still implied an input-method switch")
+	}
 	click(t, tt, "保存快捷键")
 	if m.state.Settings.Forward.InputMethod != "" || m.state.Settings.Forward.InputMethodName != "" {
 		t.Fatal("opting out did not clear the target and its display name")

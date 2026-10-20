@@ -120,13 +120,49 @@ func TestWindowsCallbackABI(t *testing.T) {
 	if result != 1 {
 		t.Fatalf("physical modifier release callback = %d, want ownership transfer", result)
 	}
-	e.mouseButton(Forward, false)
+	result, _, _ = syscall.SyscallN(callback, 0, 0x020C, uintptr(unsafe.Pointer(&event)))
+	if result != 1 {
+		t.Fatalf("forward up callback = %d, want suppression", result)
+	}
 }
 
-func TestWindowsInjectedInputIsNotRemapped(t *testing.T) {
+func TestWindowsSideButtonSuppressionIncludesInjectedMouseInput(t *testing.T) {
+	sources := []struct {
+		name  string
+		flags uint32
+	}{
+		{"hardware", 0},
+		{"injected", 1},
+		{"lower-integrity-injected", 3},
+	}
+	for _, button := range []struct {
+		name string
+		data uint32
+	}{{Back, 1 << 16}, {Forward, 2 << 16}} {
+		for _, down := range sources {
+			for _, up := range sources {
+				t.Run(button.name+"/"+down.name+"-down/"+up.name+"-up", func(t *testing.T) {
+					e, output := testEngine(t, []string{"F24"}, []string{"F24"})
+					driver := newNativeDriver(e).(*windowsDriver)
+					event := windowsMouseEvent{MouseData: button.data, Flags: down.flags, ExtraInfo: 0x1234}
+					if result := driver.handleMouse(0, 0x020B, &event); result != 1 {
+						t.Fatalf("mouse down = %d, want suppression", result)
+					}
+					event.Flags = up.flags
+					if result := driver.handleMouse(0, 0x020C, &event); result != 1 {
+						t.Fatalf("mouse up = %d, want suppression", result)
+					}
+					assertEvents(t, output, "F24 down", "F24 up")
+				})
+			}
+		}
+	}
+}
+
+func TestWindowsOwnMouseAndInjectedKeyboardInputAreNotRemapped(t *testing.T) {
 	e, output := testEngine(t, []string{"KeyA"}, nil)
 	driver := newNativeDriver(e).(*windowsDriver)
-	for _, event := range []windowsMouseEvent{{MouseData: 1 << 16, Flags: 1}, {MouseData: 1 << 16, ExtraInfo: inputTag}} {
+	for _, event := range []windowsMouseEvent{{MouseData: 1 << 16, ExtraInfo: inputTag}, {MouseData: 1 << 16, Flags: 1, ExtraInfo: inputTag}} {
 		driver.handleMouse(0, 0x020B, &event)
 	}
 	assertEvents(t, output)

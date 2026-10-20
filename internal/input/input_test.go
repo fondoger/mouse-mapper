@@ -89,10 +89,33 @@ func TestPressReleaseAndSwallow(t *testing.T) {
 	if !e.mouseButton(Back, true) || !e.mouseButton(Back, true) || !e.mouseButton(Back, false) {
 		t.Fatal("mapped click was not swallowed")
 	}
-	if e.mouseButton(Back, false) || e.mouseButton(Forward, true) {
+	if e.mouseButton(Forward, true) || e.mouseButton(Forward, false) {
 		t.Fatal("unmapped event was swallowed")
 	}
 	assertEvents(t, d, "Control down", "KeyC down", "KeyC up", "Control up")
+}
+
+func TestMappedButtonsConsumeDuplicateReleasesWithoutOutput(t *testing.T) {
+	e, d := testEngine(t, []string{"KeyA"}, []string{"KeyA"})
+	for _, button := range []string{Back, Forward} {
+		if !e.mouseButton(button, false) {
+			t.Fatal("enabled mapping leaked an unmatched release")
+		}
+		for _, down := range []bool{true, true, false, false} {
+			if !e.mouseButton(button, down) {
+				t.Fatalf("duplicated %s down=%v escaped", button, down)
+			}
+		}
+	}
+	assertEvents(t, d, "KeyA down", "KeyA up", "KeyA down", "KeyA up")
+	if err := e.Apply(Config{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, button := range []string{Back, Forward} {
+		if e.mouseButton(button, true) || e.mouseButton(button, false) {
+			t.Fatal("paused mapping swallowed a new click")
+		}
+	}
 }
 
 func TestSharedModifierReferenceCounts(t *testing.T) {
@@ -188,18 +211,34 @@ func TestPauseAndStopReleaseKeys(t *testing.T) {
 	}
 }
 
-func TestFailedInjectionRollsBackAndPassesMouse(t *testing.T) {
-	e, d := testEngine(t, []string{"Control", "KeyC"}, nil)
-	d.fail = "KeyC down"
-	if e.mouseButton(Back, true) || e.mouseButton(Back, false) {
-		t.Fatal("failed injection must pass through")
-	}
-	assertEvents(t, d, "Control down", "Control up")
-	if !strings.Contains(e.Status().Message, "injection denied") {
-		t.Fatal("missing failure status")
-	}
-	if len(e.references) != 0 {
-		t.Fatalf("references leaked: %v", e.references)
+func TestFailedInjectionRollsBackAndStillConsumesMouse(t *testing.T) {
+	for _, button := range []string{Back, Forward} {
+		for _, denied := range []string{"Control down", "KeyC down"} {
+			t.Run(button+"/"+denied, func(t *testing.T) {
+				e, d := testEngine(t, []string{"Control", "KeyC"}, []string{"Control", "KeyC"})
+				d.fail = denied
+				if !e.mouseButton(button, true) || !e.mouseButton(button, true) || !e.mouseButton(button, false) {
+					t.Fatal("failed mapped click escaped to its original action")
+				}
+				var want []string
+				if denied == "KeyC down" {
+					want = []string{"Control down", "Control up"}
+				}
+				assertEvents(t, d, want...)
+				if !strings.Contains(e.Status().Message, "injection denied") {
+					t.Fatal("missing failure status")
+				}
+				if len(e.references) != 0 || len(e.active) != 0 {
+					t.Fatalf("failed click retained ownership: %v, %v", e.references, e.active)
+				}
+				d.fail = ""
+				if !e.mouseButton(button, true) || !e.mouseButton(button, false) {
+					t.Fatal("recovered mapping did not consume the next click")
+				}
+				want = append(want, "Control down", "KeyC down", "KeyC up", "Control up")
+				assertEvents(t, d, want...)
+			})
+		}
 	}
 }
 
@@ -357,6 +396,7 @@ func TestStatusSeparatesRuntimeErrorsFromListeningState(t *testing.T) {
 	if status := e.Status(); !status.Running || !strings.Contains(status.Error, "injection denied") {
 		t.Fatalf("missing nonfatal injection error: %#v", status)
 	}
+	e.mouseButton(Back, false)
 	d.fail = ""
 	e.mouseButton(Back, true)
 	if status := e.Status(); status.Error != "" {

@@ -237,8 +237,8 @@ func TestInputMethodQueueIsBounded(t *testing.T) {
 		}
 	}
 	expectPreparation(t, focus, "test:wechat")
-	if e.mouseButton(Back, true) || e.mouseButton(Back, false) {
-		t.Fatal("an overflowing request must fail open as a complete mouse click")
+	if !e.mouseButton(Back, true) || !e.mouseButton(Back, true) || !e.mouseButton(Back, false) {
+		t.Fatal("an overflowing mapped request must not fall back to navigation")
 	}
 	if err := e.Apply(Config{}); err != nil {
 		t.Fatal(err)
@@ -247,11 +247,18 @@ func TestInputMethodQueueIsBounded(t *testing.T) {
 	expectPreparedEvents(t, e, d)
 }
 
-func TestInputMethodCaptureFailureDoesNotSwallowHalfClick(t *testing.T) {
-	e, d, _ := preparedEngine(t)
-	e.captureFocus = func() (inputmethod.Focus, error) { return nil, inputmethod.ErrFocusChanged }
-	if e.mouseButton(Back, true) || e.mouseButton(Back, false) {
-		t.Fatal("capture failure swallowed a side-button event")
+func TestInputMethodCaptureFailureStillConsumesMappedClick(t *testing.T) {
+	for _, button := range []string{Back, Forward} {
+		t.Run(button, func(t *testing.T) {
+			e, d, _ := preparedEngine(t)
+			e.captureFocus = func() (inputmethod.Focus, error) { return nil, inputmethod.ErrFocusChanged }
+			if !e.mouseButton(button, true) || !e.mouseButton(button, true) || !e.mouseButton(button, false) {
+				t.Fatal("capture failure allowed original navigation")
+			}
+			expectPreparedEvents(t, e, d)
+			if len(e.active) != 0 || !strings.Contains(e.Status().Error, "foreground") {
+				t.Fatal("failed capture retained a press or lost its error")
+			}
+		})
 	}
-	expectPreparedEvents(t, e, d)
 }

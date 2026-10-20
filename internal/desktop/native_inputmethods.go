@@ -82,13 +82,13 @@ func (v *nativeView) inputMethodChoice(c *ui.Context) {
 				}
 			}
 		}
-		message, color := "先确认所选输入法，再发送快捷键；不会轮换到其他输入法。", muted
+		message, color := "保持当前输入法，直接发送快捷键。选择目标后，已选中时不会重复切换。", muted
 		if v.state.InputMethodsError != "" {
 			message, color = "读取输入法失败，可重试或保持不切换。"+v.state.InputMethodsError, ui.Hex("#bf4b46")
 		} else if len(v.state.InputMethods) == 0 {
 			message = "未检测到可用输入法。请先在系统中启用，再点击刷新。"
 		} else if v.editInputMethod != "" {
-			message += "切换失败时不发送按键。"
+			message = "已是目标则不切换；否则先切换再触发，不轮换其他输入法。切换失败时不发送按键。"
 		}
 		ui.Text(c, message).FontSize(10).TextColor(color).MaxLines(3).Tooltip(message).Selectable()
 	})

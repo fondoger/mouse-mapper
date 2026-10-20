@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"slices"
 	"sync"
+	"time"
 
 	"github.com/fondoger/mouse-mapper/internal/inputmethod"
 )
@@ -18,10 +19,26 @@ const (
 )
 
 type Binding struct {
-	Enabled         bool     `json:"enabled"`
+	Enabled         bool              `json:"enabled"`
+	Keys            []string          `json:"keys"`
+	InputMethod     string            `json:"inputMethod,omitempty"`
+	InputMethodName string            `json:"inputMethodName,omitempty"`
+	LongPress       *LongPressBinding `json:"longPress,omitempty"`
+}
+
+const (
+	DefaultLongPressThresholdMS = 500
+	MinLongPressThresholdMS     = 100
+	MaxLongPressThresholdMS     = 5000
+)
+
+// A configured long press makes both actions one-shot taps: a short tap on
+// release, or the long action as soon as its threshold is reached, never both.
+type LongPressBinding struct {
 	Keys            []string `json:"keys"`
 	InputMethod     string   `json:"inputMethod,omitempty"`
 	InputMethodName string   `json:"inputMethodName,omitempty"`
+	ThresholdMS     int      `json:"thresholdMs"`
 }
 
 type Config struct {
@@ -121,19 +138,50 @@ func normalizeConfig(config Config) (Config, error) {
 		name    string
 		binding *Binding
 	}{{Back, &config.Back}, {Forward, &config.Forward}} {
-		if err := inputmethod.ValidateSelection(item.binding.InputMethod, item.binding.InputMethodName); err != nil {
-			return Config{}, fmt.Errorf("%s mapping: %w", item.name, err)
-		}
-		keys, err := NormalizeKeys(item.binding.Keys)
+		binding, err := NormalizeBinding(*item.binding)
 		if err != nil {
 			return Config{}, fmt.Errorf("%s mapping: %w", item.name, err)
 		}
-		if item.binding.Enabled && len(keys) == 0 {
-			return Config{}, fmt.Errorf("%s mapping: choose a key or shortcut first", item.name)
-		}
-		item.binding.Keys = keys
+		*item.binding = binding
 	}
 	return config, nil
+}
+
+// NormalizeBinding also copies all mutable action data before the engine or
+// settings store takes ownership of it. Old bindings have no long-press action.
+func NormalizeBinding(binding Binding) (Binding, error) {
+	if err := inputmethod.ValidateSelection(binding.InputMethod, binding.InputMethodName); err != nil {
+		return Binding{}, err
+	}
+	keys, err := NormalizeKeys(binding.Keys)
+	if err != nil {
+		return Binding{}, err
+	}
+	if binding.Enabled && len(keys) == 0 {
+		return Binding{}, errors.New("choose a key or shortcut first")
+	}
+	binding.Keys = keys
+	if binding.LongPress != nil {
+		long := *binding.LongPress
+		if err := inputmethod.ValidateSelection(long.InputMethod, long.InputMethodName); err != nil {
+			return Binding{}, fmt.Errorf("long press: %w", err)
+		}
+		long.Keys, err = NormalizeKeys(long.Keys)
+		if err != nil {
+			return Binding{}, fmt.Errorf("long press: %w", err)
+		}
+		if len(long.Keys) == 0 {
+			return Binding{}, errors.New("long press: choose a key or shortcut first")
+		}
+		if long.ThresholdMS == 0 {
+			long.ThresholdMS = DefaultLongPressThresholdMS
+		}
+		if long.ThresholdMS < MinLongPressThresholdMS || long.ThresholdMS > MaxLongPressThresholdMS {
+			return Binding{}, fmt.Errorf("long press threshold must be between %d and %d milliseconds", MinLongPressThresholdMS, MaxLongPressThresholdMS)
+		}
+		binding.LongPress = &long
+	}
+	return binding, nil
 }
 
 type nativeDriver interface {
@@ -176,6 +224,9 @@ type Engine struct {
 	preparing     map[*preparedPress]struct{}
 	pendingButton map[string]*preparedPress
 	prepareWorker bool
+	timedPresses  map[string]*timedPress
+	now           func() time.Time
+	afterFunc     func(time.Duration, func()) pressTimer
 }
 
 func New(onTrigger func(Trigger)) *Engine {
@@ -183,6 +234,8 @@ func New(onTrigger func(Trigger)) *Engine {
 		status: Status{Platform: runtime.GOOS, Message: "Input service has not started"},
 		active: map[string][]string{}, references: map[string]*keyReference{},
 		onTrigger: onTrigger, captureFocus: inputmethod.CaptureFocus,
+		timedPresses: map[string]*timedPress{}, now: time.Now,
+		afterFunc: func(delay time.Duration, work func()) pressTimer { return time.AfterFunc(delay, work) },
 	}
 	e.driver = newNativeDriver(e)
 	return e
@@ -194,13 +247,19 @@ func (e *Engine) Apply(config Config) error {
 		return err
 	}
 	for _, binding := range []Binding{normalized.Back, normalized.Forward} {
-		for _, code := range binding.Keys {
-			if !e.driver.supports(code) {
-				return fmt.Errorf("%s is not supported on %s", code, runtime.GOOS)
-			}
+		actions := [][]string{binding.Keys}
+		if binding.LongPress != nil {
+			actions = append(actions, binding.LongPress.Keys)
 		}
-		if runtime.GOOS == "windows" && slices.Contains(binding.Keys, "Control") && slices.Contains(binding.Keys, "Alt") && slices.Contains(binding.Keys, "Delete") {
-			return errors.New("Windows does not allow apps to simulate the secure Control+Alt+Delete shortcut")
+		for _, keys := range actions {
+			for _, code := range keys {
+				if !e.driver.supports(code) {
+					return fmt.Errorf("%s is not supported on %s", code, runtime.GOOS)
+				}
+			}
+			if runtime.GOOS == "windows" && slices.Contains(keys, "Control") && slices.Contains(keys, "Alt") && slices.Contains(keys, "Delete") {
+				return errors.New("Windows does not allow apps to simulate the secure Control+Alt+Delete shortcut")
+			}
 		}
 	}
 	e.lifecycle.Lock()
@@ -210,7 +269,7 @@ func (e *Engine) Apply(config Config) error {
 		e.mu.Unlock()
 		return nil
 	}
-	e.cancelPreparedLocked()
+	e.cancelPendingLocked()
 	e.mu.Unlock()
 	return e.onInputThread(context.Background(), func() error {
 		e.mu.Lock()
@@ -276,7 +335,7 @@ func (e *Engine) Stop() error {
 	e.mu.Lock()
 	// Cancel immediately, without joining an IME worker that may be waiting on
 	// the UI thread which called Stop during application shutdown.
-	e.cancelPreparedLocked()
+	e.cancelPendingLocked()
 	e.status.Running = false
 	e.status.Message = "Input service stopped"
 	e.mu.Unlock()
@@ -350,10 +409,25 @@ func SupportedCodes() []string {
 func (e *Engine) mouseButton(button string, down bool) bool {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	var binding Binding
+	switch button {
+	case Back:
+		binding = e.config.Back
+	case Forward:
+		binding = e.config.Forward
+	default:
+		return false
+	}
+	mapped := e.status.Running && e.config.Enabled && binding.Enabled
 	keys, active := e.active[button]
 	if !down {
 		if !active {
-			return false
+			// Some mouse software duplicates hardware releases as injected input.
+			// A mapped side button must not regain its navigation action on an extra up.
+			return mapped
+		}
+		if press := e.timedPresses[button]; press != nil {
+			e.releaseTimedPressLocked(press)
 		}
 		if pending := e.pendingButton[button]; pending != nil {
 			pending.down = false
@@ -369,30 +443,25 @@ func (e *Engine) mouseButton(button string, down bool) bool {
 	if active {
 		return true
 	}
-	if !e.status.Running || !e.config.Enabled {
+	if !mapped {
 		return false
 	}
-	var binding Binding
-	switch button {
-	case Back:
-		binding = e.config.Back
-	case Forward:
-		binding = e.config.Forward
-	default:
-		return false
-	}
-	if !binding.Enabled {
-		return false
+	// Claim the entire click before any fallible work. Failed preparation or
+	// partial key injection must never fall back to browser navigation.
+	e.active[button] = nil
+	if binding.LongPress != nil {
+		e.beginTimedPressLocked(button, binding)
+		return true
 	}
 	if binding.InputMethod != "" {
-		return e.preparePressLocked(button, binding)
+		e.preparePressLocked(button, binding)
+		return true
 	}
 	pressed, err := e.pressKeysLocked(binding.Keys)
 	if err != nil {
 		e.status.Message = err.Error()
 		e.status.Error = err.Error()
-		// Fail open: neither half of this mouse click is swallowed.
-		return false
+		return true
 	}
 	e.active[button] = pressed
 	e.triggerLocked(button, binding.Keys)
@@ -511,7 +580,7 @@ func (e *Engine) retryPendingReleasesLocked() error {
 }
 
 func (e *Engine) releaseAllLocked() error {
-	e.cancelPreparedLocked()
+	e.cancelPendingLocked()
 	// Release ordinary keys before modifiers even if both buttons share a chord.
 	keys := make([]string, 0, len(e.references))
 	for _, modifier := range modifiers {
@@ -553,5 +622,13 @@ func equalConfig(a, b Config) bool {
 
 func equalBinding(a, b Binding) bool {
 	return a.Enabled == b.Enabled && slices.Equal(a.Keys, b.Keys) &&
+		a.InputMethod == b.InputMethod && a.InputMethodName == b.InputMethodName && equalLongPress(a.LongPress, b.LongPress)
+}
+
+func equalLongPress(a, b *LongPressBinding) bool {
+	if a == nil || b == nil {
+		return a == b
+	}
+	return a.ThresholdMS == b.ThresholdMS && slices.Equal(a.Keys, b.Keys) &&
 		a.InputMethod == b.InputMethod && a.InputMethodName == b.InputMethodName
 }

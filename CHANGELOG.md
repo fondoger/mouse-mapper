@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.0 - 2026-10-20
+
+- Add an optional long-press action for each side button, with an independent shortcut, input method and 100-5000 ms threshold (default 500 ms). Without long press, retain immediate key-down and hold-until-release behavior. With it, a short release sends one complete tap; reaching the threshold immediately sends one long-action tap, never repeats and never also sends the short action on release.
+- Add a compact Native UI editor for single/long actions, numeric threshold validation, isolated drafts and atomic Save/Cancel. Existing settings remain compatible and do not enable long press automatically.
+- Skip input-method selection entirely when the captured target already uses the exact requested profile. Windows now reads the actual focus thread's existing TSF identity using small matching-architecture native query helpers; it never infers WeChat/Doubao identity from a shared HKL, another process's profile or a cached prior selection. macOS retains its exact TIS identity check.
+- Fail closed when the current Windows input-method identity cannot be read: report the error and skip the shortcut, without blindly activating a profile. Native queries do not initialize or activate a target's TSF manager. Build and verify all helper architectures from source with a pinned, hash-checked LLVM-MinGW toolchain in CI and Windows releases; the Go application remains cgo-free.
+- Keep Windows COM argument buffers stable across native callbacks and Go stack growth; exercise the ABI with forced stack-growth/GC and race-instrumented regression tests.
+- Consume mapped side-button down/up events even when focus capture, input-method preparation or key injection fails. Handle mouse-software-injected XBUTTON events and duplicate releases instead of letting them fall through to original navigation. Separately generated browser commands, keyboard shortcuts and raw-device input remain distinct vendor/application paths.
+- Cancel pending long actions and input-method work on pause, configuration changes, stop or native failure; preserve original focus, shared-key ownership and one-shot threshold decisions under delayed timer/dispatch delivery.
+- Keep compact bottom-right feedback, modifier-only recording, tray behavior, seven-day update checks and macOS 13+ requirements unchanged. Physical mouse/vendor voice behavior still requires device-level acceptance; automated tests do not silently change the user's live input method or installed application.
+
 ## 0.2.1 - 2026-10-19
 
 - Correct the declared minimum macOS version to 13.0 to match the actual Mach-O deployment target produced by Go 1.27. Earlier packages declared 12.0 in their Info.plist, but that did not make those binaries compatible with macOS 12.

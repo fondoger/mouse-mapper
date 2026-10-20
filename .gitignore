@@ -1,4 +1,4 @@
-# Generated caches and local tooling leftovers (the app is Go-only)
+# Generated caches and local tooling leftovers (no frontend build is required)
 node_modules/
 dist/
 coverage/
@@ -13,6 +13,8 @@ mouse-mapper.exe
 mygo_windows_*.syso
 *.test
 *.test.exe
+internal/inputmethod/winprobe/bin/*/
+internal/inputmethod/winprobe/bin/manifest.json
 
 # Local state and credentials
 .env

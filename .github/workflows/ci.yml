@@ -36,9 +36,16 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go mod download
-      - run: go test ./...
+      - name: Build pinned, no-CRT Windows input-method query helpers
+        if: runner.os == 'Windows'
+        run: go run ./scripts/buildime
+      - name: Test packages and require embedded Windows helpers
+        env:
+          MOUSE_MAPPER_REQUIRE_NATIVE_PROBE_ASSETS: ${{ runner.os == 'Windows' && '1' || '' }}
+          MOUSE_MAPPER_NATIVE_PROBE_TEST: ${{ runner.os == 'Windows' && '1' || '' }}
+        run: go test ./...
       - run: go vet ./...
-      - name: Optional Windows hook and test-owned input sink
+      - name: Optional Windows input-hook smoke tests
         if: runner.os == 'Windows' && github.event_name == 'workflow_dispatch' && inputs.native_input
         shell: pwsh
         run: |
@@ -47,12 +54,13 @@ jobs:
             exit 0
           }
           $env:MOUSE_MAPPER_NATIVE_TEST = '1'
-          go test ./internal/input -run TestWindowsNativeHookAndSendInput -count=1
+          $env:MOUSE_MAPPER_NATIVE_MOUSE_TEST = '1'
+          go test ./internal/input -run '^TestWindowsNative(HookAndSendInput|SideButtonsAreSuppressed|LongPressUsesHookThread)$' -count=1
           exit $LASTEXITCODE
       - name: Render the actual native views without a browser
         env:
           MOUSE_MAPPER_UI_SNAPSHOTS: ${{ runner.temp }}/mouse-mapper-snapshots
-        run: go test ./internal/desktop -run TestNativeSnapshots -count=1
+        run: go test ./internal/desktop -run '^TestNative(Snapshots|LongPressSnapshots)$' -count=1
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-ui-${{ runner.os }}
@@ -61,6 +69,20 @@ jobs:
           retention-days: 14
       - name: Compile production build tags
         run: go build -tags mygo_noinspector ./...
+      - name: Recheck native helper source and binary hashes
+        if: runner.os == 'Windows'
+        run: go run ./scripts/buildime -verify-only
+      - name: Preserve native input-method helper inspection artifacts
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-ime-probe-Windows
+          path: |
+            internal/inputmethod/winprobe/bin/*/*.exe
+            internal/inputmethod/winprobe/bin/*/*.dll
+            internal/inputmethod/winprobe/bin/manifest.json
+          if-no-files-found: error
+          retention-days: 14
 
   cross-compile:
     name: Cross-compile / ${{ matrix.goos }}-${{ matrix.goarch }}
@@ -76,6 +98,16 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
+      - name: Build native Windows helpers on the Linux host
+        if: matrix.goos == 'windows'
+        run: |
+          go run ./scripts/buildime
+          go run ./scripts/buildime -verify-only
+      - name: Require the native assets before cross-compiling Windows
+        if: matrix.goos == 'windows'
+        env:
+          MOUSE_MAPPER_REQUIRE_NATIVE_PROBE_ASSETS: '1'
+        run: go test ./internal/inputmethod/winprobe
       - name: Build and vet target packages without cgo
         env:
           GOOS: ${{ matrix.goos }}

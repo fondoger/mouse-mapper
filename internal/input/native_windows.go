@@ -424,7 +424,10 @@ func (d *windowsDriver) handleMouse(code int32, message uintptr, event *windowsM
 	if code < 0 || (message != 0x020B && message != 0x020C) || event == nil {
 		return d.next(code, message, unsafe.Pointer(event))
 	}
-	if event.Flags&1 != 0 || event.ExtraInfo == inputTag {
+	// Mouse Mapper injects keyboard events, not replacement mouse clicks. Mouse
+	// utilities may synthesize side buttons, so their injected flag must not
+	// bypass mapping or let the release of a swallowed press through.
+	if event.ExtraInfo == inputTag {
 		return d.next(code, message, unsafe.Pointer(event))
 	}
 	var button string

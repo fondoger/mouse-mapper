@@ -25,34 +25,38 @@ type preparedPress struct {
 
 // Only capture the foreground target inside the OS hook. Switching input
 // methods may involve IPC, so a bounded FIFO performs it outside the hook.
-func (e *Engine) preparePressLocked(button string, binding Binding) bool {
-	if len(e.preparing) >= maxPrepared {
-		e.preparationErrorLocked(errors.New("too many pending input-method changes; shortcut skipped"))
-		return false
-	}
+func (e *Engine) preparePressLocked(button string, binding Binding) {
 	focus, err := e.captureFocus()
 	if err != nil || focus == nil {
 		if err == nil {
 			err = inputmethod.ErrFocusChanged
 		}
 		e.preparationErrorLocked(err)
-		return false
+		return
+	}
+	e.prepareActionLocked(button, binding, focus, true)
+}
+
+func (e *Engine) prepareActionLocked(button string, binding Binding, focus inputmethod.Focus, held bool) {
+	if len(e.preparing) >= maxPrepared {
+		e.preparationErrorLocked(errors.New("too many pending input-method changes; shortcut skipped"))
+		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), prepareTimeout)
-	press := &preparedPress{button: button, binding: binding, focus: focus, ctx: ctx, cancel: cancel, down: true}
+	press := &preparedPress{button: button, binding: binding, focus: focus, ctx: ctx, cancel: cancel, down: held}
 	if e.preparing == nil {
 		e.preparing = make(map[*preparedPress]struct{})
 		e.pendingButton = make(map[string]*preparedPress)
 	}
 	e.preparing[press] = struct{}{}
-	e.pendingButton[button] = press
-	e.active[button] = nil
+	if held {
+		e.pendingButton[button] = press
+	}
 	e.prepareQueue = append(e.prepareQueue, press)
 	if !e.prepareWorker {
 		e.prepareWorker = true
 		go e.runPrepared()
 	}
-	return true
 }
 
 func (e *Engine) runPrepared() {

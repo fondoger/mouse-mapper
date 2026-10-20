@@ -82,8 +82,18 @@ jobs:
         with:
           go-version-file: go.mod
       - run: go mod download
-      - run: go test ./...
+      - name: Build pinned, no-CRT Windows input-method query helpers
+        if: runner.os == 'Windows'
+        run: go run ./scripts/buildime
+      - name: Test packages and require embedded Windows helpers
+        env:
+          MOUSE_MAPPER_REQUIRE_NATIVE_PROBE_ASSETS: ${{ runner.os == 'Windows' && '1' || '' }}
+          MOUSE_MAPPER_NATIVE_PROBE_TEST: ${{ runner.os == 'Windows' && '1' || '' }}
+        run: go test ./...
       - run: go vet ./...
+      - name: Gate Windows packaging on current native sources and verified helpers
+        if: runner.os == 'Windows'
+        run: go run ./scripts/buildime -verify-only
       - name: Build signed update archives and upload to staging draft
         env:
           GH_TOKEN: ${{ github.token }}

@@ -77,6 +77,15 @@ type winProfile struct {
 
 type winCOM struct{ VTable *[24]uintptr }
 
+// COM may reenter Go while holding these arguments. Unlike SyscallN's keepalive,
+// uintptrescapes keeps pointer-backed buffers off the movable goroutine stack.
+//
+//go:uintptrescapes
+func winCOMCall(function uintptr, args ...uintptr) uintptr {
+	result, _, _ := syscall.SyscallN(function, args...)
+	return result
+}
+
 type winThreadMessage struct {
 	Window  uintptr
 	Message uint32
@@ -107,7 +116,7 @@ func winPumpThreadMessages() {
 
 func (obj *winCOM) release() {
 	if obj != nil {
-		syscall.SyscallN(obj.VTable[2], uintptr(unsafe.Pointer(obj)))
+		winCOMCall(obj.VTable[2], uintptr(unsafe.Pointer(obj)))
 	}
 }
 
@@ -136,7 +145,7 @@ func winOpenProfiles() (*winProfiles, error) {
 		service.close()
 		return nil, winHRESULT("open input-method profiles", result)
 	}
-	result, _, _ = syscall.SyscallN(service.manager.VTable[0], uintptr(unsafe.Pointer(service.manager)),
+	result = winCOMCall(service.manager.VTable[0], uintptr(unsafe.Pointer(service.manager)),
 		uintptr(unsafe.Pointer(&winInputProfilesIID)), uintptr(unsafe.Pointer(&service.profiles)))
 	if result != 0 || service.profiles == nil {
 		service.close()
@@ -159,7 +168,7 @@ func (service *winProfiles) enumerate(ctx context.Context) ([]winProfile, error)
 	}
 	var enumerator *winCOM
 	// A zero LANGID enumerates every installed language, not just the current one.
-	result, _, _ := syscall.SyscallN(service.manager.VTable[6], uintptr(unsafe.Pointer(service.manager)), 0,
+	result := winCOMCall(service.manager.VTable[6], uintptr(unsafe.Pointer(service.manager)), 0,
 		uintptr(unsafe.Pointer(&enumerator)))
 	if result != 0 || enumerator == nil {
 		return nil, winHRESULT("enumerate input-method profiles", result)
@@ -172,7 +181,7 @@ func (service *winProfiles) enumerate(ctx context.Context) ([]winProfile, error)
 		}
 		var profile winProfile
 		var fetched uint32
-		result, _, _ = syscall.SyscallN(enumerator.VTable[4], uintptr(unsafe.Pointer(enumerator)), 1,
+		result = winCOMCall(enumerator.VTable[4], uintptr(unsafe.Pointer(enumerator)), 1,
 			uintptr(unsafe.Pointer(&profile)), uintptr(unsafe.Pointer(&fetched)))
 		if int32(result) < 0 {
 			return nil, winHRESULT("read input-method profile", result)
@@ -187,7 +196,7 @@ func (service *winProfiles) enumerate(ctx context.Context) ([]winProfile, error)
 
 func (service *winProfiles) active() (winProfile, error) {
 	var profile winProfile
-	result, _, _ := syscall.SyscallN(service.manager.VTable[10], uintptr(unsafe.Pointer(service.manager)),
+	result := winCOMCall(service.manager.VTable[10], uintptr(unsafe.Pointer(service.manager)),
 		uintptr(unsafe.Pointer(&winKeyboardCategoryGUID)), uintptr(unsafe.Pointer(&profile)))
 	if result != 0 {
 		return profile, winHRESULT("read active input-method profile", result)
@@ -197,7 +206,7 @@ func (service *winProfiles) active() (winProfile, error) {
 
 func (service *winProfiles) description(profile *winProfile) string {
 	var text *uint16
-	result, _, _ := syscall.SyscallN(service.profiles.VTable[12], uintptr(unsafe.Pointer(service.profiles)),
+	result := winCOMCall(service.profiles.VTable[12], uintptr(unsafe.Pointer(service.profiles)),
 		uintptr(unsafe.Pointer(&profile.Class)), uintptr(profile.Language),
 		uintptr(unsafe.Pointer(&profile.Profile)), uintptr(unsafe.Pointer(&text)))
 	if text == nil {
@@ -215,7 +224,7 @@ func (service *winProfiles) description(profile *winProfile) string {
 }
 
 func (service *winProfiles) activate(profile *winProfile) error {
-	result, _, _ := syscall.SyscallN(service.manager.VTable[3], uintptr(unsafe.Pointer(service.manager)),
+	result := winCOMCall(service.manager.VTable[3], uintptr(unsafe.Pointer(service.manager)),
 		uintptr(profile.Kind), uintptr(profile.Language), uintptr(unsafe.Pointer(&profile.Class)),
 		uintptr(unsafe.Pointer(&profile.Profile)), profile.Layout,
 		winActivateForSession|winActivateOtherLanguage)
@@ -500,27 +509,108 @@ func (focus *winFocus) requestLayout(ctx context.Context, layout uintptr) error 
 	return nil
 }
 
+type winSwitchProfiles interface {
+	enumerate(context.Context) ([]winProfile, error)
+	activate(*winProfile) error
+	close()
+}
+
+type winSwitchAPI struct {
+	valid             func() bool
+	foregroundProfile func(context.Context) (winProfile, error)
+	openProfiles      func() (winSwitchProfiles, error)
+	layoutCatalog     func() map[uint32]winLayoutInfo
+	loadedLayouts     func() []uintptr
+	threadLayout      func(uint32) uintptr
+	activateKeyboard  func(uintptr) error
+	requestLayout     func(context.Context, uintptr) error
+	pumpMessages      func()
+}
+
 func (focus *winFocus) Switch(ctx context.Context, id string) error {
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	return winSwitchInputMethod(ctx, id, focus.thread, winSwitchAPI{
+		valid:             focus.Valid,
+		foregroundProfile: func(ctx context.Context) (winProfile, error) { return winReadForegroundProfile(ctx, focus) },
+		openProfiles:      func() (winSwitchProfiles, error) { return winOpenProfiles() },
+		layoutCatalog:     winLayoutCatalog,
+		loadedLayouts:     winLoadedLayouts,
+		threadLayout:      winThreadLayout,
+		activateKeyboard: func(layout uintptr) error {
+			result, _, err := winActivateKeyboard.Call(layout, 0)
+			if result == 0 {
+				return err
+			}
+			return nil
+		},
+		requestLayout: focus.requestLayout,
+		pumpMessages:  winPumpThreadMessages,
+	})
+}
+
+func winSwitchGuard(ctx context.Context, valid func() bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if !focus.Valid() {
+	if !valid() {
 		return ErrFocusChanged
 	}
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
-	service, err := winOpenProfiles()
+	return ctx.Err()
+}
+
+func winValidateForegroundProfile(profile winProfile) error {
+	known := profile.Kind == winProfileKeyboard || profile.Kind == winProfileTIP &&
+		profile.Class != (windows.GUID{}) && profile.Profile != (windows.GUID{}) && profile.Category == winKeyboardCategoryGUID
+	if !known || profile.Layout == 0 || profile.Language == 0 || profile.Language != uint16(profile.Layout) {
+		return fmt.Errorf("%w: the foreground input-method identity is unavailable or inconsistent", ErrUnavailable)
+	}
+	return nil
+}
+
+func winForegroundProfileMatches(current, target winProfile) bool {
+	return winValidateForegroundProfile(current) == nil && winSameProfile(current, target)
+}
+
+func winSwitchInputMethod(ctx context.Context, id string, thread uint32, api winSwitchAPI) error {
+	if err := winSwitchGuard(ctx, api.valid); err != nil {
+		return err
+	}
+	if strings.HasPrefix(id, "windows:tip:") {
+		current, err := api.foregroundProfile(ctx)
+		if guardErr := winSwitchGuard(ctx, api.valid); guardErr != nil {
+			return guardErr
+		}
+		if err != nil {
+			return err
+		}
+		if err := winValidateForegroundProfile(current); err != nil {
+			return err
+		}
+		// Only evidence read inside the original target thread can skip selection.
+		// Different TIPs can share an HKL; our worker's profile is not evidence.
+		if current.Kind == winProfileTIP && winProfileIdentity(current, "") == id {
+			return nil
+		}
+	}
+	service, err := api.openProfiles()
 	if err != nil {
 		return err
 	}
 	defer service.close()
+	if err := winSwitchGuard(ctx, api.valid); err != nil {
+		return err
+	}
 	profiles, err := service.enumerate(ctx)
+	if guardErr := winSwitchGuard(ctx, api.valid); guardErr != nil {
+		return guardErr
+	}
 	if err != nil {
 		return err
 	}
 	var catalog map[uint32]winLayoutInfo
 	if strings.HasPrefix(id, "windows:layout:") {
-		catalog = winLayoutCatalog()
+		catalog = api.layoutCatalog()
 	}
 	var target *winProfile
 	for i := range profiles {
@@ -533,67 +623,74 @@ func (focus *winFocus) Switch(ctx context.Context, id string) error {
 	if target == nil {
 		return ErrUnavailable
 	}
-	if err := ctx.Err(); err != nil {
+	if err := winSwitchGuard(ctx, api.valid); err != nil {
 		return err
 	}
-	if !focus.Valid() {
-		return ErrFocusChanged
-	}
 	if target.Kind == winProfileKeyboard {
-		if uint32(winThreadLayout(focus.thread)) == uint32(target.Layout) {
-			return nil
-		}
-		if err := focus.requestLayout(ctx, target.Layout); err != nil {
+		current := api.threadLayout(thread)
+		if err := winSwitchGuard(ctx, api.valid); err != nil {
 			return err
 		}
-		return winWaitForSelection(ctx, focus.Valid, func() bool {
-			return uint32(winThreadLayout(focus.thread)) == uint32(target.Layout)
+		if uint32(current) == uint32(target.Layout) {
+			return nil
+		}
+		if err := api.requestLayout(ctx, target.Layout); err != nil {
+			return err
+		}
+		return winWaitForSelection(ctx, api.valid, func() bool {
+			return uint32(api.threadLayout(thread)) == uint32(target.Layout)
 		})
 	}
 
-	// TSF identities cannot be inferred from a language ID: two Chinese IMEs can
-	// share it. Activate the exact GUID pair for the desktop, not just our helper
-	// thread. Selecting that same pair again is idempotent, not cycling or toggling
-	// its language mode. No ENABLEPROFILE or default-registration APIs are used.
-	layout := winLanguageLayout(*target, winLoadedLayouts())
+	// Activate the exact GUID pair for the desktop only after the target-thread
+	// check. No ENABLEPROFILE or default-registration APIs are used.
+	layout := winLanguageLayout(*target, api.loadedLayouts())
 	if layout == 0 {
 		return fmt.Errorf("%w: no loaded keyboard layout for the input language", ErrUnavailable)
 	}
-	previous := winThreadLayout(0)
+	previous := api.threadLayout(0)
 	if uint16(previous) != target.Language {
-		result, _, callErr := winActivateKeyboard.Call(layout, 0)
-		if result == 0 {
-			return fmt.Errorf("prepare input-method worker language: %w", callErr)
+		if err := winSwitchGuard(ctx, api.valid); err != nil {
+			return err
 		}
-		defer winActivateKeyboard.Call(previous, 0)
+		if err := api.activateKeyboard(layout); err != nil {
+			return fmt.Errorf("prepare input-method worker language: %w", err)
+		}
+		defer api.activateKeyboard(previous)
 	}
-	if err := ctx.Err(); err != nil {
+	if err := winSwitchGuard(ctx, api.valid); err != nil {
 		return err
-	}
-	if !focus.Valid() {
-		return ErrFocusChanged
 	}
 	// Windows exposes synchronous COM here; cancellation is checked immediately
 	// before and after it. Never detach a timed-out call that could switch later.
 	if err := service.activate(target); err != nil {
 		return err
 	}
-	if uint16(winThreadLayout(focus.thread)) != target.Language {
-		if err := focus.requestLayout(ctx, layout); err != nil {
+	if err := winSwitchGuard(ctx, api.valid); err != nil {
+		return err
+	}
+	currentLayout := api.threadLayout(thread)
+	if err := winSwitchGuard(ctx, api.valid); err != nil {
+		return err
+	}
+	if uint16(currentLayout) != target.Language {
+		if err := api.requestLayout(ctx, layout); err != nil {
 			return err
 		}
 	}
-	return winWaitForSelection(ctx, focus.Valid, func() bool {
-		winPumpThreadMessages()
-		active, err := service.active()
-		if err != nil || !winSameProfile(active, *target) {
-			return false
+	return winWaitForSelectionResult(ctx, api.valid, func(queryCtx context.Context) (bool, error) {
+		api.pumpMessages()
+		if err := winSwitchGuard(queryCtx, api.valid); err != nil {
+			return false, err
 		}
-		// Session activation selects the GUID pair. Also wait for the original
-		// target thread to acknowledge the same concrete layout as the TSF worker.
-		workerLayout := winThreadLayout(0)
-		return workerLayout != 0 && uint16(workerLayout) == target.Language &&
-			uint32(winThreadLayout(focus.thread)) == uint32(workerLayout)
+		current, err := api.foregroundProfile(queryCtx)
+		if err != nil {
+			return false, err
+		}
+		if err := winValidateForegroundProfile(current); err != nil {
+			return false, err
+		}
+		return winForegroundProfileMatches(current, *target), nil
 	})
 }
 
@@ -611,30 +708,35 @@ func (stability *winSelectionStability) ready(matched bool, now time.Time) bool 
 }
 
 func winWaitForSelection(ctx context.Context, valid func() bool, selected func() bool) error {
+	return winWaitForSelectionResult(ctx, valid, func(context.Context) (bool, error) {
+		return selected(), nil
+	})
+}
+
+func winWaitForSelectionResult(ctx context.Context, valid func() bool, selected func(context.Context) (bool, error)) error {
 	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
 	// A caller without a deadline must not wait forever for an unresponsive app.
 	deadline := time.Now().Add(1500 * time.Millisecond)
+	queryCtx, cancelQueries := context.WithDeadline(ctx, deadline)
+	defer cancelQueries()
 	timeout := time.NewTimer(time.Until(deadline))
 	defer timeout.Stop()
 	timeoutErr := errors.New("the foreground application did not confirm the selected input method")
 	var stability winSelectionStability
 	for {
-		if err := ctx.Err(); err != nil {
+		if err := winSwitchGuard(ctx, valid); err != nil {
 			return err
-		}
-		if !valid() {
-			return ErrFocusChanged
 		}
 		if !time.Now().Before(deadline) {
 			return timeoutErr
 		}
-		matched := selected()
-		if err := ctx.Err(); err != nil {
-			return err
+		matched, err := selected(queryCtx)
+		if guardErr := winSwitchGuard(ctx, valid); guardErr != nil {
+			return guardErr
 		}
-		if !valid() {
-			return ErrFocusChanged
+		if err != nil {
+			return err
 		}
 		now := time.Now()
 		if !now.Before(deadline) {

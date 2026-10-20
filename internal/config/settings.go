@@ -40,6 +40,13 @@ func Default() Settings {
 func Clone(s Settings) Settings {
 	s.Back.Keys = slices.Clone(s.Back.Keys)
 	s.Forward.Keys = slices.Clone(s.Forward.Keys)
+	for _, binding := range []*input.Binding{&s.Back, &s.Forward} {
+		if binding.LongPress != nil {
+			long := *binding.LongPress
+			long.Keys = slices.Clone(long.Keys)
+			binding.LongPress = &long
+		}
+	}
 	return s
 }
 
@@ -57,15 +64,11 @@ func Normalize(s Settings) (Settings, error) {
 	}
 	s = Clone(s)
 	for name, binding := range map[string]*input.Binding{"back": &s.Back, "forward": &s.Forward} {
-		if len(binding.Keys) == 0 && !binding.Enabled {
-			binding.Keys = []string{}
-			continue
-		}
-		keys, err := input.NormalizeKeys(binding.Keys)
+		normalized, err := input.NormalizeBinding(*binding)
 		if err != nil {
 			return Settings{}, fmt.Errorf("%s button: %w", name, err)
 		}
-		binding.Keys = keys
+		*binding = normalized
 	}
 	if err := input.ValidateConfig(s.Input(false)); err != nil {
 		return Settings{}, err
