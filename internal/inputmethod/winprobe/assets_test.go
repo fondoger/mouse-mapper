@@ -41,6 +41,16 @@ func setManifest(t *testing.T, files fstest.MapFS, metadata manifest) {
 	files["bin/manifest.json"] = &fstest.MapFile{Data: data}
 }
 
+func canonicalTempDir(t *testing.T) string {
+	t.Helper()
+	// Resolve host temp aliases (such as macOS /var) before adding test fixtures.
+	directory, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return directory
+}
+
 func TestEmbeddedProbeAssets(t *testing.T) {
 	err := RequireAssets()
 	if errors.Is(err, ErrAssetsUnavailable) && os.Getenv("MOUSE_MAPPER_REQUIRE_NATIVE_PROBE_ASSETS") != "1" {
@@ -106,7 +116,7 @@ func TestExtractionPublishesIdenticalBytesWithoutOverwrite(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache := t.TempDir()
+	cache := canonicalTempDir(t)
 	paths, err := assets.extract(cache, "arm64")
 	if err != nil {
 		t.Fatal(err)
@@ -139,7 +149,7 @@ func TestConcurrentExtractionDoesNotExposePartialFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache := t.TempDir()
+	cache := canonicalTempDir(t)
 	var workers sync.WaitGroup
 	errors := make(chan error, 12)
 	for range 12 {
@@ -173,7 +183,7 @@ func TestExtractionRejectsDirectoryOrSymlinkInFileSlot(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cache := t.TempDir()
+			cache := canonicalTempDir(t)
 			directory := filepath.Join(cache, "Mouse Mapper", "native-input", assets.id, "386")
 			if err := os.MkdirAll(directory, 0o700); err != nil {
 				t.Fatal(err)
@@ -207,7 +217,7 @@ func TestExtractionRejectsSymlinkedDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cache, outside := t.TempDir(), t.TempDir()
+	cache, outside := canonicalTempDir(t), canonicalTempDir(t)
 	if err := os.Symlink(outside, filepath.Join(cache, "Mouse Mapper")); err != nil {
 		t.Skipf("test host cannot create directory symlinks: %v", err)
 	}
