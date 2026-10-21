@@ -1,5 +1,10 @@
 # Manual acceptance checklist
 
+## 0.4.0 changes (not locally validated)
+
+The editor now shows both action rows at once. Long press is enabled by a nonempty long shortcut, not a switch. Manual selection and presets are removed. The optional hold checkbox keeps the long chord pressed until side-button release; unchecked retains tap behavior. Older checklist sections describe historical layouts and must be interpreted against these changes. No local test/build/screenshot run was performed for this change at the user's request; tagged Actions retain the automatic release gates.
+
+
 The application and updater use MyGo Native UI, not a browser. Automated tests cover mapping state, input-method preparation with fake backends, settings, native UI interactions, rendering and signed release assets. Cross-compilation does **not** prove that a physical mouse, OS permissions, input-method switching, vendor voice activation, startup registration or application installation works on another machine.
 
 Record the OS version, CPU architecture, mouse model, display scale, app version and tested cases. Do not report untested cases as passing. Complete required acceptance tests **before pushing a version tag**: tag workflows publish successful builds automatically.
@@ -122,7 +127,7 @@ go run ./scripts/buildime -verify-only
 go test ./...
 go vet ./...
 go build -tags mygo_noinspector ./...
-go run ./scripts/releasecheck -tag v0.3.1 -repository fondoger/mouse-mapper
+go run ./scripts/releasecheck -tag v0.4.0 -repository fondoger/mouse-mapper
 ```
 
 `buildime` downloads a pinned, SHA-256-verified LLVM-MinGW toolchain into the ignored workspace cache and compiles the six small no-CRT query assets. It does not execute the compiled helpers. Windows CI/release tests set `MOUSE_MAPPER_REQUIRE_NATIVE_PROBE_ASSETS=1` so missing or corrupt embedded assets fail the build; `-verify-only` additionally checks current C sources, PE architecture/exports/imports and hashes. Windows jobs also set `MOUSE_MAPPER_NATIVE_PROBE_TEST=1` to run the isolated, non-activating target-thread query fixture described below; this gate does not require the optional input-hook dispatch. macOS jobs do not download or run a C compiler. The application remains `CGO_ENABLED=0`.

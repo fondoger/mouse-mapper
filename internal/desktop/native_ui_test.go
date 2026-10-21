@@ -25,7 +25,7 @@ type uiMapper struct {
 
 func newUIMapper() *uiMapper {
 	return &uiMapper{state: State{
-		Settings: config.Default(), Version: "0.3.1", SupportedCodes: input.SupportedCodes(),
+		Settings: config.Default(), Version: "0.4.0", SupportedCodes: input.SupportedCodes(),
 		Status:     input.Status{Platform: runtime.GOOS, Available: true, Running: true},
 		ConfigPath: "settings.json",
 		Update:     UpdateState{Enabled: true, AutomaticChecks: true, IntervalDays: 7},
@@ -173,13 +173,18 @@ func TestRecordedKeysUsePhysicalPosition(t *testing.T) {
 	}
 }
 
-func TestNativeViewManualModifierOnly(t *testing.T) {
+func TestNativeViewRecordsModifierOnly(t *testing.T) {
 	m := newUIMapper()
 	v := testView(m)
 	tt := ui.NewTester(v.main, 1080, 760)
 	click(t, tt, "编辑后退键")
-	click(t, tt, "手动选择")
-	click(t, tt, "使用仅修饰键")
+	click(t, tt, "快捷键录制区域")
+	modifier := ui.Ctrl
+	if runtime.GOOS == "darwin" {
+		modifier = ui.Super
+	}
+	tt.HoldModifiers(modifier)
+	tt.HoldModifiers(0)
 	click(t, tt, "保存快捷键")
 	primary := "Control"
 	if runtime.GOOS == "darwin" {

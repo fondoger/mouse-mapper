@@ -47,16 +47,16 @@ type nativeView struct {
 	error    string
 	help     bool
 
-	editing             bool
-	editButton          string
-	editKeys            []string
-	editMode            int
-	capture             bool
-	captured            bool
-	captureFocus        ui.Handle
-	recorder            shortcutRecorder
-	editError           string
-	manualQuery         string
+	editing    bool
+	editButton string
+	editKeys   []string
+
+	capture      bool
+	captured     bool
+	captureFocus [2]ui.Handle
+	recorder     shortcutRecorder
+	editError    string
+
 	editInputMethod     string
 	editInputMethodName string
 	editAction          int
@@ -146,7 +146,7 @@ func (v *nativeView) startEditor(button string) {
 			return
 		}
 		v.editing, v.capture, v.captured = true, false, false
-		v.editButton, v.editMode, v.editError = button, 0, ""
+		v.editButton, v.editError = button, ""
 		v.editDraft, v.editAction = draft, 0
 		v.loadEditorAction()
 		v.stopCapture()
@@ -357,7 +357,7 @@ func (v *nativeView) mappings(c *ui.Context) {
 	})
 	ui.Row(c.Key("mapping-note")).Gap(7).Children(func() {
 		ui.Icon(c, iconShield).FontSize(13).TextColor(ui.Hex("#98a2b1"))
-		ui.Text(c, "默认按住侧键时保持按键；启用长按后，单击或长按只触发一次。暂停映射恢复原始前进 / 后退。").FontSize(10).TextColor(muted)
+		ui.Text(c, "长按可发送一次，或保持按下直到侧键松开。暂停映射恢复原始前进 / 后退。").FontSize(10).TextColor(muted)
 	})
 }
 
@@ -397,6 +397,9 @@ func (v *nativeView) mappingCard(c *ui.Context, button string, binding input.Bin
 					v.mappingActionSummary(c.Key("short-action"), "单击", binding.Keys, binding.InputMethod, binding.InputMethodName)
 					long := binding.LongPress
 					v.mappingActionSummary(c.Key("long-action"), fmt.Sprintf("长按 · %d ms", long.ThresholdMS), long.Keys, long.InputMethod, long.InputMethodName)
+					if long.Hold {
+						ui.Text(c, "保持按下，侧键松开时释放").FontSize(10).TextColor(muted)
+					}
 				}
 				caption := shortcutName(binding.Keys, v.state.Status.Platform)
 				if !binding.Enabled {
@@ -514,81 +517,59 @@ func (v *nativeView) editor(c *ui.Context) {
 	dialog := ui.DialogBase(c.Key("shortcut-editor"), &v.editing, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(24, 35, 53, .22))
 		_, availableHeight := c.Size()
-		panel.Width(530).MaxWidthPercent(94).Height(min(668, availableHeight*.94)).Padding(24).Gap(13).Radius(23).Background(white).Border(1, line).
+		panel.Width(700).MaxWidthPercent(94).Height(min(520, availableHeight*.94)).Padding(24).Gap(16).Radius(23).Background(white).Border(1, line).
 			Shadow(0, 18, 60, 0, ui.RGBA(15, 27, 47, .17))
-		ui.Scroll(c.Key("editor-body")).Grow(1).MinHeight(0).Gap(13).Padding(0, 12, 2, 0).Children(func() {
-			ui.Row(c).Children(func() {
+		ui.Scroll(c.Key("editor-body")).Grow(1).MinHeight(0).Gap(16).Padding(0, 8, 2, 0).Children(func() {
+			ui.Row(c).Gap(13).Children(func() {
 				iconTile(c, iconKeyboard, blue, 43)
-				ui.Spacer(c)
-				ui.Text(c, "长按").FontSize(11).TextColor(muted).Margin(0, 8, 0, 0)
-				on := v.editDraft.longEnabled
-				if ui.Switch(c.Key("enable-long-press"), &on).Label("启用长按映射").Disabled(v.busy).Margin(0, 12, 0, 0).Changed() {
-					v.setLongPressEnabled(on)
-				}
+				ui.Text(c, "为"+name+"设置快捷键").FontSize(21).FontWeight(650).Grow(1)
 				if iconButton(c.Key("cancel-x"), iconClose, "取消编辑").Disabled(v.busy).Clicked() {
 					v.cancelEditor()
 				}
 			})
-			ui.Column(c).Gap(6).Children(func() {
-				ui.Text(c, "为"+name+"设置快捷键").FontSize(21).FontWeight(650)
-				detail := "一个按键，或一个组合。按你的习惯来。"
-				if v.editDraft.longEnabled {
-					detail = "单击松开时触发，长按到时触发；每次只执行一个动作。"
-				}
-				ui.Text(c, detail).FontSize(12).TextColor(muted)
-			})
-			if v.editDraft.longEnabled {
-				v.longPressEditor(c.Key("long-press-editor"))
-			}
-			if ui.Segmented(c.Key("record-mode"), &v.editMode, "键盘录制", "手动选择").Label("设置方式").Disabled(v.busy).Changed() {
-				v.stopCapture()
-				if v.editMode == 1 {
-					v.syncManualQuery()
-				}
-			}
-			if v.editMode == 0 {
-				v.captureArea(c)
-			} else {
-				ui.Box(c).FillWidth().Padding(16).Center().Radius(13).Background(canvas).Children(func() {
-					keycaps(c, v.editKeys, v.state.Status.Platform, 24).FillWidth().Justify(ui.Center)
+			ui.Text(c, "点击输入框后录制；长按留空则不启用。").FontSize(12).TextColor(muted)
+			ui.Column(c.Key("actions")).Gap(12).FillWidth().Children(func() {
+				ui.Row(c).Gap(12).FillWidth().Children(func() {
+					ui.Text(c, "行为").Width(72).FontSize(10).TextColor(muted)
+					ui.Text(c, "快捷键").Width(264).FontSize(10).TextColor(muted)
+					ui.Text(c, "触发前行为").Grow(1).FontSize(10).TextColor(muted)
 				})
-				v.manualKeys(c)
-			}
-			v.inputMethodChoice(c.Key("input-method-choice"))
-			sectionLabel(c, "或从常用操作开始")
-			ui.Row(c).Wrap().Gap(7).Children(func() {
-				for _, preset := range shortcutPresets(v.state.Status.Platform) {
-					if ui.Button(c.Key(preset.name), preset.name).FontSize(11).Padding(7, 11).Disabled(v.busy).Clicked() {
-						v.editKeys = slices.Clone(preset.keys)
-						v.stopCapture()
-						v.captured, v.editError = true, ""
-						v.syncManualQuery()
-					}
+				for action, title := range []string{"单击行为", "长按行为"} {
+					ui.Row(c.Key(title)).Gap(12).FillWidth().Children(func() {
+						ui.Text(c, title).Width(72).FontSize(12).TextColor(ink)
+						v.captureArea(c.Key("shortcut"), action)
+						ui.Column(c.Key("preparation")).Grow(1).MinWidth(0).Children(func() {
+							v.actionInputMethodChoice(c, action)
+						})
+					})
 				}
 			})
-			message, color := "编辑期间暂停映射。系统保留的快捷键可通过手动选择设置。", muted
-			if v.editError != "" {
-				message, color = v.editError, ui.Hex("#bf4b46")
-			} else if v.editDraft.longEnabled {
+			v.longPressEditor(c.Key("long-options"))
+			ui.Text(c, "配置长按后，单击松开时触发；达到阈值仅触发长按。默认发送一次，勾选后保持按下。").FontSize(10).TextColor(muted)
+			ui.Text(c, "Esc、Enter、Tab 均可录入；取消编辑请点击“取消”。").FontSize(10).TextColor(muted)
+			v.inputMethodNotice(c.Key("input-method-notice"))
+			message := v.editError
+			if message == "" && v.longPressConfigured() {
 				if _, err := parseLongPressThreshold(v.editDraft.threshold); err != nil {
-					message, color = err.Error(), ui.Hex("#bf4b46")
+					message = err.Error()
 				}
 			}
-			ui.Text(c, message).FontSize(10).TextColor(color).Selectable()
+			if message != "" {
+				ui.Text(c, message).FontSize(10).TextColor(ui.Hex("#bf4b46")).MaxLines(3).Tooltip(message)
+			}
 		})
 		ui.Row(c).Gap(9).Justify(ui.End).Shrink(0).Children(func() {
+			ui.Text(c, "编辑期间暂停映射").FontSize(10).TextColor(muted).Grow(1)
 			if ui.Button(c, "取消").Padding(10, 19).Disabled(v.busy).Clicked() {
 				v.cancelEditor()
 			}
 			_, validationError := v.editorBinding()
-			if ui.PrimaryButton(c, "保存快捷键").Padding(10, 20).Disabled(v.busy || validationError != nil || (v.editMode == 1 && v.editError != "")).Clicked() {
+			if ui.PrimaryButton(c, "保存快捷键").Padding(10, 20).Disabled(v.busy || validationError != nil).Clicked() {
 				v.saveEditor()
 			}
 		})
 	})
 	if wasEditing && dialog.Dismissed() {
-		// An armed field consumes Escape before the dialog. Other dismissals
-		// must still resume the native input service.
 		v.editing = true
 		if !v.busy {
 			v.cancelEditor()
@@ -599,50 +580,56 @@ func (v *nativeView) editor(c *ui.Context) {
 func (v *nativeView) stopCapture() {
 	v.capture = false
 	v.recorder.reset()
-	v.captureFocus.CancelFocus()
+	for i := range v.captureFocus {
+		v.captureFocus[i].CancelFocus()
+	}
 }
 
-func (v *nativeView) captureArea(c *ui.Context) {
-	ui.Column(c.Key("shortcut-field")).Gap(8).FillWidth().Children(func() {
-		ui.Row(c).Gap(14).FillWidth().Children(func() {
-			ui.Text(c, "快捷键").FontSize(12).TextColor(ink)
-			ui.Spacer(c)
-			area := ui.Row(c.Key("capture")).Width(300).MinWidth(0).Height(42).Padding(0, 12).Radius(8).
-				Background(canvas).Border(1, line).Focusable().InputMethod(false).Bind(&v.captureFocus).
-				Label("快捷键录制区域").Disabled(v.busy)
-			if area.Clicked() {
-				v.capture, v.captured, v.editError = true, false, ""
-				v.recorder.reset()
-				// Modifiers held before activation must not replace the prompt.
-				v.recorder.mods = c.Modifiers()
-				v.captureFocus.Focus()
-			} else if !area.Focused() || area.PressedOutside() || v.busy {
-				v.stopCapture()
-			}
-			if v.capture {
-				area.BorderColor(blue).Background(white)
-				if keys := v.recorder.modifiers(c.Modifiers()); len(keys) != 0 {
-					v.editKeys, v.captured, v.editError = keys, true, ""
-				}
-			}
-			area.HandleInput(v.recordInput).Children(func() {
-				text, color := describeKeys(v.editKeys, v.state.Status.Platform), ink
-				if v.capture && !v.captured {
-					text, color = "按下快捷键", muted
-				} else if text == "" {
-					text, color = "点击设置快捷键", muted
-				}
-				ui.Text(c, text).FontSize(13).TextColor(color).SingleLine().Grow(1).MinWidth(0).Tooltip(text)
-			})
-		})
-		hint := "点击输入框后录制，点击其他位置结束。"
-		if v.capture {
-			hint = "Esc、Enter、Tab 均可录入；取消编辑请点击“取消”。"
+func (v *nativeView) captureArea(c *ui.Context, action int) {
+	label, clearLabel := "快捷键录制区域", "清空单击快捷键"
+	if action == 1 {
+		label, clearLabel = "长按快捷键录制区域", "清空长按快捷键"
+	}
+	ui.Row(c).Width(264).MinWidth(0).Gap(4).Children(func() {
+		area := ui.Row(c.Key("capture")).Grow(1).MinWidth(0).Height(42).Padding(0, 10).Radius(8).
+			Background(canvas).Border(1, line).Focusable().InputMethod(false).Bind(&v.captureFocus[action]).
+			Label(label).Disabled(v.busy)
+		if area.Clicked() {
+			v.switchEditorAction(action)
+			v.capture, v.captured, v.editError = true, false, ""
+			v.recorder.reset()
+			v.recorder.mods = c.Modifiers()
+			v.captureFocus[action].Focus()
+		} else if action == v.editAction && (!area.Focused() || area.PressedOutside() || v.busy) {
+			v.stopCapture()
 		}
-		ui.Text(c, hint).FontSize(10).TextColor(muted)
+		active := action == v.editAction && v.capture
+		if active {
+			area.BorderColor(blue).Background(white)
+			if keys := v.recorder.modifiers(c.Modifiers()); len(keys) != 0 {
+				v.editKeys, v.captured, v.editError = keys, true, ""
+			}
+		}
+		area.HandleInput(func(event ui.InputEvent) bool {
+			return action == v.editAction && v.recordInput(event)
+		}).Children(func() {
+			text, color := describeKeys(v.editorAction(action).keys, v.state.Status.Platform), ink
+			if active && !v.captured {
+				text, color = "按下快捷键", muted
+			} else if text == "" {
+				text, color = "点击设置快捷键", muted
+				if action == 1 {
+					text = "留空不启用"
+				}
+			}
+			ui.Text(c, text).FontSize(12).TextColor(color).SingleLine().Grow(1).MinWidth(0).Tooltip(text)
+		})
+		if iconButton(c.Key("clear"), iconClose, clearLabel).Width(24).
+			Disabled(v.busy || len(v.editorAction(action).keys) == 0).Clicked() {
+			v.clearEditorAction(action)
+		}
 	})
 }
-
 func (v *nativeView) recordInput(event ui.InputEvent) bool {
 	if !v.capture || v.busy {
 		v.recorder.reset()
@@ -671,65 +658,6 @@ func (v *nativeView) recordInput(event ui.InputEvent) bool {
 	return true
 }
 
-func (v *nativeView) manualKeys(c *ui.Context) {
-	ui.Row(c).Gap(7).Children(func() {
-		for _, code := range modifierNames {
-			on := slices.Contains(v.editKeys, code)
-			button := ui.ButtonBase(c.Key(code)).Label("修饰键 "+keyLabel(code, v.state.Status.Platform)).
-				Padding(9, 14).Radius(8).Border(1, line).Background(white).Disabled(v.busy)
-			if on {
-				button.Background(blueWash).BorderColor(blue.Alpha(.35)).TextColor(blue)
-			}
-			if button.Children(func() { ui.Text(c, keyLabel(code, v.state.Status.Platform)).FontSize(12).FontWeight(600) }).Clicked() {
-				if on {
-					v.editKeys = slices.DeleteFunc(v.editKeys, func(key string) bool { return key == code })
-				} else {
-					v.editKeys = append(v.editKeys, code)
-				}
-				v.editKeys, _ = input.NormalizeKeys(v.editKeys)
-			}
-		}
-	})
-	options, codeByLabel := []string{"仅修饰键"}, map[string]string{}
-	for _, code := range v.state.SupportedCodes {
-		if slices.Contains(modifierNames, code) {
-			continue
-		}
-		label := keyLabel(code, v.state.Status.Platform)
-		options = append(options, label)
-		codeByLabel[label] = code
-	}
-	ui.Row(c).Gap(13).Children(func() {
-		ui.Text(c, "按键").FontSize(12)
-		if ui.Combobox(c.Key("manual-key"), &v.manualQuery, options).Label("选择按键").Grow(1).Disabled(v.busy).Changed() {
-			code, valid := codeByLabel[v.manualQuery]
-			if valid || v.manualQuery == "仅修饰键" {
-				v.editKeys = slices.DeleteFunc(v.editKeys, func(key string) bool { return !slices.Contains(modifierNames, key) })
-				if code != "" {
-					v.editKeys = append(v.editKeys, code)
-				}
-				v.editError = ""
-			} else {
-				v.editError = "请从列表选择一个有效按键。"
-			}
-		}
-		if ui.Button(c, "仅修饰键").Label("使用仅修饰键").FontSize(11).Disabled(v.busy).Clicked() {
-			v.editKeys = slices.DeleteFunc(v.editKeys, func(key string) bool { return !slices.Contains(modifierNames, key) })
-			v.manualQuery = "仅修饰键"
-			v.editError = ""
-		}
-	})
-}
-
-func (v *nativeView) syncManualQuery() {
-	v.manualQuery = "仅修饰键"
-	for _, key := range v.editKeys {
-		if !slices.Contains(modifierNames, key) {
-			v.manualQuery = keyLabel(key, v.state.Status.Platform)
-		}
-	}
-}
-
 func (v *nativeView) helpDialog(c *ui.Context) {
 	ui.DialogBase(c.Key("help-dialog"), &v.help, func(backdrop, panel ui.Element) {
 		backdrop.Background(ui.RGBA(24, 35, 53, .22))
@@ -741,7 +669,7 @@ func (v *nativeView) helpDialog(c *ui.Context) {
 			}
 		})
 		for _, item := range []struct{ title, detail string }{
-			{"01  选择一个侧键", "点击“更改”录制或手动选择快捷键。默认映射按住与松开；启用长按后，可分别设置单击、长按动作和各自的输入法，每次只触发一个动作。"},
+			{"01  选择一个侧键", "点击“更改”，分别录制单击和长按行为。长按留空即禁用；可独立选择输入法，并勾选保持按下直到侧键松开。"},
 			{"02  让它留在后台", "关闭窗口后映射仍然工作。可在偏好设置中启用开机自启、隐藏托盘；再次打开 App 即可回到这里。"},
 			{"03  让系统允许输入", "macOS 需要辅助功能 / 输入监控权限；授权后点“重新连接”。Windows 无法向权限高于本程序的应用发送按键。"},
 			{"04  保持轻量与安全", "不记录输入内容，不上传使用记录。自动更新每 7 天检查一次 GitHub 发布，并验证 MyGo 更新签名。系统保留的组合键可能无法模拟。"},

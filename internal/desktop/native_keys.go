@@ -136,7 +136,7 @@ func physicalCode(key ui.Key) string {
 func recordedKeys(event ui.InputEvent) ([]string, error) {
 	code := physicalCode(recordingKey(event))
 	if code == "" {
-		return nil, fmt.Errorf("这个按键暂不能直接录制，请使用手动选择")
+		return nil, fmt.Errorf("这个按键暂不能录制，请使用其他按键")
 	}
 	return input.NormalizeKeys(append(modifierKeys(event.Mods), code))
 }

@@ -8,7 +8,7 @@ import (
 )
 
 func TestNativeEditorActionsStayVisibleAtMinimumSize(t *testing.T) {
-	for _, mode := range []string{"record", "manual", "record-error", "manual-error"} {
+	for _, mode := range []string{"record", "record-error"} {
 		t.Run(mode, func(t *testing.T) {
 			m := newUIMapper()
 			m.state.InputMethods = uiInputMethods()
@@ -18,9 +18,6 @@ func TestNativeEditorActionsStayVisibleAtMinimumSize(t *testing.T) {
 			v := testView(m)
 			tt := ui.NewTester(v.main, 880, 640)
 			click(t, tt, "编辑后退键")
-			if strings.Contains(mode, "manual") {
-				click(t, tt, "手动选择")
-			}
 			for _, label := range []string{"保存快捷键", "取消"} {
 				bounds, found := tt.Find(label)
 				if !found || bounds.W < 20 || bounds.H < 18 || bounds.Y+bounds.H > 616 {
@@ -36,7 +33,7 @@ func TestNativeEditorActionsStayVisibleAtMinimumSize(t *testing.T) {
 }
 
 func TestNativeLongInputMethodNameDoesNotHideEditorOrPopup(t *testing.T) {
-	for _, manual := range []bool{false, true} {
+	for range 1 {
 		m := newUIMapper()
 		m.state.InputMethods = uiInputMethods()
 		m.state.InputMethods[0].Name = "International Input Method " + strings.Repeat("ProfessionalEdition", 9)
@@ -47,9 +44,6 @@ func TestNativeLongInputMethodNameDoesNotHideEditorOrPopup(t *testing.T) {
 		click(t, tt, "编辑后退键")
 		if !v.editing {
 			t.Fatal("the long mapping-card label pushed the Edit button out of reach")
-		}
-		if manual {
-			click(t, tt, "手动选择")
 		}
 		bounds, found := tt.Find("选择触发前的输入法")
 		if !found || bounds.W > 480 || bounds.X < 0 || bounds.X+bounds.W > 880 {

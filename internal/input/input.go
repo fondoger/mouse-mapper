@@ -32,13 +32,14 @@ const (
 	MaxLongPressThresholdMS     = 5000
 )
 
-// A configured long press makes both actions one-shot taps: a short tap on
-// release, or the long action as soon as its threshold is reached, never both.
+// A configured long press selects one action at the threshold or on release.
+// Hold keeps the long action's keys down until the physical side button is up.
 type LongPressBinding struct {
 	Keys            []string `json:"keys"`
 	InputMethod     string   `json:"inputMethod,omitempty"`
 	InputMethodName string   `json:"inputMethodName,omitempty"`
 	ThresholdMS     int      `json:"thresholdMs"`
+	Hold            bool     `json:"hold,omitempty"`
 }
 
 type Config struct {
@@ -428,6 +429,8 @@ func (e *Engine) mouseButton(button string, down bool) bool {
 		}
 		if press := e.timedPresses[button]; press != nil {
 			e.releaseTimedPressLocked(press)
+			// A delayed timer may decide and press a held action during release.
+			keys = e.active[button]
 		}
 		if pending := e.pendingButton[button]; pending != nil {
 			pending.down = false
@@ -629,6 +632,6 @@ func equalLongPress(a, b *LongPressBinding) bool {
 	if a == nil || b == nil {
 		return a == b
 	}
-	return a.ThresholdMS == b.ThresholdMS && slices.Equal(a.Keys, b.Keys) &&
+	return a.ThresholdMS == b.ThresholdMS && a.Hold == b.Hold && slices.Equal(a.Keys, b.Keys) &&
 		a.InputMethod == b.InputMethod && a.InputMethodName == b.InputMethodName
 }

@@ -109,6 +109,56 @@ func TestLongPressFiresAtThresholdOnceWithoutWaitingForRelease(t *testing.T) {
 	}
 }
 
+func TestLongPressHoldReleasesOnlyWithSideButton(t *testing.T) {
+	for _, delayed := range []bool{false, true} {
+		e, d, _, clock := longPressEngine(t)
+		cfg := e.config
+		cfg.Forward.LongPress = &LongPressBinding{Keys: []string{"Shift", "Meta"}, ThresholdMS: 500, Hold: true}
+		if err := e.Apply(cfg); err != nil {
+			t.Fatal(err)
+		}
+		e.mouseButton(Forward, true)
+		clock.now = clock.now.Add(500 * time.Millisecond)
+		if !delayed {
+			clock.timers[0].work()
+			assertEvents(t, d, "Shift down", "Meta down")
+			clock.timers[0].work()
+			assertEvents(t, d, "Shift down", "Meta down")
+		}
+		e.mouseButton(Forward, false)
+		clock.timers[0].work()
+		assertEvents(t, d, "Shift down", "Meta down", "Meta up", "Shift up")
+		if len(e.references) != 0 {
+			t.Fatal("held long action stranded output keys")
+		}
+	}
+}
+
+func TestLongPressHoldTracksReleaseDuringInputMethodPreparation(t *testing.T) {
+	for _, releaseBeforeReady := range []bool{false, true} {
+		e, d, focus, clock := longPressEngine(t)
+		cfg := e.config
+		cfg.Forward.LongPress = &LongPressBinding{Keys: []string{"Escape"}, ThresholdMS: 500, Hold: true, InputMethod: "test:long"}
+		if err := e.Apply(cfg); err != nil {
+			t.Fatal(err)
+		}
+		e.mouseButton(Forward, true)
+		clock.now = clock.now.Add(500 * time.Millisecond)
+		clock.timers[0].work()
+		expectPreparation(t, focus, "test:long")
+		if releaseBeforeReady {
+			e.mouseButton(Forward, false)
+		}
+		close(focus.ready)
+		waitPreparation(t, e)
+		if !releaseBeforeReady {
+			expectPreparedEvents(t, e, d, "Escape down")
+			e.mouseButton(Forward, false)
+		}
+		expectPreparedEvents(t, e, d, "Escape down", "Escape up")
+	}
+}
+
 func TestReleaseUsesElapsedTimeEvenWhenTimerIsLate(t *testing.T) {
 	for _, elapsed := range []time.Duration{499 * time.Millisecond, 500 * time.Millisecond, 20 * time.Second} {
 		t.Run(elapsed.String(), func(t *testing.T) {

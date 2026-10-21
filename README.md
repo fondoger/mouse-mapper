@@ -30,7 +30,7 @@
 
 从 [Releases](https://github.com/fondoger/mouse-mapper/releases) 下载对应安装包：Windows 运行安装程序；macOS 打开 DMG 并将应用拖入 Applications，然后从 Applications 启动。首次在 macOS 使用时，在「系统设置 → 隐私与安全性」中的「辅助功能」和「输入监控」允许 Mouse Mapper，按应用提示重试或重新启动。
 
-GitHub 会将安装包文件名中的空格改为点号，例如本地的 `Mouse Mapper Setup 0.3.1 amd64.exe` 下载后为 `Mouse.Mapper.Setup.0.3.1.amd64.exe`，通用 macOS 包为 `Mouse.Mapper.0.3.1.dmg`。校验和清单使用下载后的实际文件名。当前 Go 工具链生成的 Mac 程序最低需要 macOS 13；旧包元信息中曾写的 12.0 不代表支持 macOS 12，0.2.1 已修正声明。
+GitHub 会将安装包文件名中的空格改为点号，例如本地的 `Mouse Mapper Setup 0.4.0 amd64.exe` 下载后为 `Mouse.Mapper.Setup.0.4.0.amd64.exe`，通用 macOS 包为 `Mouse.Mapper.0.4.0.dmg`。校验和清单使用下载后的实际文件名。当前 Go 工具链生成的 Mac 程序最低需要 macOS 13；旧包元信息中曾写的 12.0 不代表支持 macOS 12，0.2.1 已修正声明。
 
 **签名说明：** 更新归档使用 Ed25519 签名，但这与操作系统代码签名是两回事。目前 Windows 安装程序未做代码签名，macOS 使用 ad-hoc 签名，未配置 Developer ID 或 Apple 公证。SmartScreen / Gatekeeper 可能拦截下载的构建；请核对来源与 `SHA256SUMS.txt`，不要全局关闭系统安全保护。macOS 可选择本机从源码构建，或等待已公证的发行版。macOS 更新后也可能需要重新确认辅助功能授权。
 
@@ -38,34 +38,31 @@ GitHub 会将安装包文件名中的空格改为点号，例如本地的 `Mouse
 
 ## 日常使用
 
-在「按键映射」点击「更改」，再点击右侧快捷键输入框。内容变成「按下快捷键」后才开始监听；此时 `Esc`、`Enter`、`Tab` 都可以直接录入，不会取消编辑、保存或切换焦点。点击其他位置、切换单击／长按动作或离开应用窗口后停止监听，再次点击输入框才会继续。也可以使用「手动选择」，最后点击「保存快捷键」。默认复制 / 粘贴使用 Windows 的 `Ctrl` 或 macOS 的 `Command`。编辑期间会临时暂停映射，退出编辑后恢复，避免侧键干扰录入。
+在「按键映射」点击「更改」，编辑器同时显示两行：
 
-输入框未激活时显示原有快捷键；点击后未输入任何按键就离开，不会清空原配置。录制中请点击「取消」或右上角关闭按钮取消编辑；未录制时 `Esc` 仍可关闭编辑器。键盘操作也可先用 `Tab` 聚焦输入框，再用 `Enter` 或空格启动录制。
+| 行为 | 快捷键 | 触发前行为 |
+| --- | --- | --- |
+| 单击行为 | 点击输入框录制 | 保持当前输入法，或选择目标输入法 |
+| 长按行为 | 默认留空，不启用 | 独立选择目标输入法 |
 
-![点击输入框后才开始录制快捷键](docs/screenshots/shortcut-field-active.png)
+点击输入框，看到「按下快捷键」后才开始监听。`Esc`、`Enter`、`Tab` 都作为快捷键录入，不会取消编辑或切换焦点。点击其他位置或离开窗口后停止监听；单纯点击后未录入不会清空已有快捷键。每行右侧的清空按钮可移除该行快捷键。录制中请点击「取消」或关闭按钮放弃编辑，未录制时也可以按 Esc 关闭。
 
-已启用的侧键映射会拦截按下、松开和额外的重复松开，即使输入法准备或按键发送失败，也不会回退成原始前进／后退。Windows 同样处理鼠标软件生成的模拟侧键事件；关闭对应映射或全局暂停后恢复原始行为。其他软件单独发送的浏览器命令、键盘快捷键或应用自行读取的原始设备数据并不是同一种侧键事件，不能靠侧键拦截保证阻止；如仍出现双重操作，请提供目标应用、鼠标型号及鼠标管理软件。
+录制与发送的通用修饰键使用左侧原生键，因此 `Shift + Win` 发出的是左 Shift + 左 Win；目前不保留录制时的左右侧区别。纯修饰键组合依次松开不会缩减为最后一个键。
 
-仅修饰键也可直接录制，例如同时按住 `Ctrl + Shift + Win`（macOS 为 `Control + Shift + Command`）；依次松开不会把组合缩减成最后一个键。全部松开后可继续重录，保存后重新打开仍保留完整组合。被系统拦截的按键可改用「手动选择」。
-
-关闭主窗口不会退出。彻底停止映射请使用应用或托盘菜单的「退出」。隐藏托盘后，从开始菜单、Applications 或应用启动器再次打开 Mouse Mapper 即可恢复主界面。
+编辑期间暂停映射，保存或取消后恢复。已映射的侧键会拦截原始前进／后退事件；鼠标厂商软件单独发送的浏览器命令或键盘快捷键属于其他输入路径。
 
 ### 单击与长按
 
-更改侧键时开启「长按」，分别编辑「单击」和「长按」的按键与输入法，再设置长按阈值并保存。两种动作互斥：
+长按输入框留空时，单击映射仍在侧键按下时立即按住对应按键、侧键松开时释放。填写长按快捷键后，短按在松开时触发，达到阈值只触发长按，不会再补发单击。阈值默认 **500 ms**，可设为 **100–5000 ms**。
 
-| 配置与操作 | 触发时机 |
-| --- | --- |
-| 未配置长按 | 按下即触发；继续按住时保持输出键，松开时释放。 |
-| 配置长按，未达到阈值就松开 | 松开时发送一次完整的单击按键组合。 |
-| 配置长按，按住达到阈值 | 立即发送一次完整的长按按键组合；继续按住不重复，松开不触发单击。 |
+长按行为有两种输出方式：
 
-例如，前进键的「单击」选择 `Enter`，切换到「长按」后点击快捷键输入框，再直接按 `Esc`，阈值设为 `500 ms`。也可以通过「手动选择」设置这两个键。前进、后退键可以独立启用长按，单击与长按也可以分别选择输入法。开启长按后，两种动作都是完整的按下／释放，不用于持续按住修饰键；需要按住 `Shift` 拖动等行为时，请关闭该侧键的长按功能。
+- **默认不勾选「保持按下直到侧键松开」：** 达到阈值时发送一次完整的按下／松开，不因持续按住而重复发送。
+- **勾选后：** 达到阈值时按住配置的长按组合键，侧键松开才释放。应用可能按照自身规则处理持续按住的键，例如文本重复或按住说话。
 
-只有判定出来的动作才会进行输入法准备；如果需要切换，会在确认目标输入法后发送按键，而不是承诺输入法切换零延迟。在等待期间切换到其他目标窗口／控件、暂停或更改映射，会取消待执行动作。旧版配置不会自动启用长按。
+例如：单击录制 `Enter`，长按录制 `Esc`；或者长按录制语音输入组合键并勾选保持按下。单击与长按可以选择不同输入法。输入法准备完成后才发送按键；如果在准备期间侧键已松开，就发送一次完整按下／松开，不会留下卡住的按键。暂停、更改配置或退出会释放本应用持有的按键。
 
-![单击 Enter、长按 Esc 的原生设置界面](docs/screenshots/longpress-editor-long-minimum.png)
-
+关闭主窗口不会退出。彻底停止映射请使用应用或托盘的「退出」。隐藏托盘后再次打开应用即可恢复主界面。
 ### 先切换输入法，再触发语音快捷键
 
 1. 在系统中安装并启用微信输入法、豆包输入法或其他目标输入法；在该输入法自己的设置中开启语音输入，并确认其**实际配置的触发快捷键**。不同产品和版本没有统一的语音快捷键，Mouse Mapper 不会替你修改这些设置或授予麦克风权限。
@@ -162,11 +159,11 @@ Mouse Mapper is a quiet **Windows and macOS** utility built in Go with **MyGo Na
 
 **Shortcut recording:** click the compact shortcut field to start listening; opening the editor alone does not record keys. Escape, Enter and Tab are ordinary recorded keys while the field is armed. Clicking elsewhere, changing actions/modes or leaving the window stops capture without erasing the draft. Use the Cancel button while recording; Escape dismisses the editor only when not recording. Keyboard users can Tab to the field and activate it with Enter or Space.
 
-**Optional long press:** without it, a side button sends key-down immediately and releases its keys on mouse-up. With it, release before the threshold sends one complete short-action tap; reaching the threshold immediately sends one complete long-action tap, with no repeats and no short action on release. Each button has its own **100–5000 ms** threshold (default **500 ms**), shortcut and optional input method for each action. For example, Forward can tap Enter and long-press Escape. Click the shortcut field in each action to record its key, or use the manual picker. Existing settings do not enable long press automatically.
+**Optional long press:** the two action rows are always visible. Leave the long shortcut blank to disable it, or record a shortcut and choose a 100-5000 ms threshold (default 500 ms). A short release sends the short action; reaching the threshold selects only the long action. By default the long action is one complete tap. Enable "hold until side-button release" to keep its chord down until mouse-up. Each row has its own optional input method. Clearing the long shortcut restores immediate-on-down behavior.
 
 **Install:** choose a Windows x64 / ARM64 installer or the universal macOS DMG from [Releases](https://github.com/fondoger/mouse-mapper/releases). macOS 13+ requires Accessibility and Input Monitoring permissions. Windows integrity boundaries and other mouse software can prevent injection. Windows installers are not code-signed; macOS builds are ad-hoc signed, not Developer ID signed or notarized. Update signing does not replace OS code signing. Never disable system-wide security protections to run the app.
 
-GitHub replaces spaces with dots in installer filenames: for example, `Mouse.Mapper.Setup.0.3.1.amd64.exe` or `Mouse.Mapper.0.3.1.dmg`. Published checksums use these actual download names; local build filenames retain spaces. The current Go toolchain emits a macOS 13 deployment target. Earlier packages' 12.0 Info.plist value did not provide macOS 12 compatibility; 0.2.1 corrects that declaration.
+GitHub replaces spaces with dots in installer filenames: for example, `Mouse.Mapper.Setup.0.4.0.amd64.exe` or `Mouse.Mapper.0.4.0.dmg`. Published checksums use these actual download names; local build filenames retain spaces. The current Go toolchain emits a macOS 13 deployment target. Earlier packages' 12.0 Info.plist value did not provide macOS 12 compatibility; 0.2.1 corrects that declaration.
 
 **Input method before shortcut:** each side button can optionally select an installed, enabled input method before sending its shortcut. The default is to leave the current input method unchanged. Choose the target in the native shortcut editor, then map the button to the hotkey configured in that input method's own voice-input settings; there is no universal WeChat/Doubao voice shortcut. Installation, enablement, vendor voice settings and microphone access remain the user's responsibility. Preview only displays feedback: it never changes the input method or injects keys.
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0 - 2026-10-21
+
+- Show single-click and long-press actions together as two rows, each with its own click-to-record shortcut field and optional input-method selector. Remove the long-press enable switch, action tabs, manual picker and shortcut presets.
+- Leave the optional long shortcut empty by default. Recording a shortcut enables it; clearing it disables long press without changing the single-click action. Keep the configurable 100-5000 ms threshold.
+- Add an opt-in "hold until side-button release" checkbox. At the threshold, the long chord is pressed once and stays held until mouse-up; the default remains one complete tap. Preserve key ownership, IME readiness, delayed-timer release and lifecycle cleanup. Existing settings default to tap mode.
+- Retain recordable Escape, modifier-only chords, and exact-current-input-method selection skipping. Generic modifiers continue to send the left-hand native keys.
+- Updated sources and regression cases without running local builds, tests or screenshot checks, as requested. Tagged GitHub Actions retain their existing automatic build/release gates.
+
 ## 0.3.1 - 2026-10-21
 
 - Replace the automatically armed recording panel with a compact shortcut field. Opening the editor or changing actions/modes never starts capture; explicitly activating the field shows the recording prompt before listening. Existing keys remain intact if no new shortcut is entered.

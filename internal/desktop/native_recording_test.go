@@ -81,14 +81,15 @@ func TestNativeRecordingSpecialKeysDoNotDismissOrNavigate(t *testing.T) {
 							label = "编辑前进键"
 						}
 						click(t, tt, label)
+						field := "快捷键录制区域"
 						if long {
-							click(t, tt, "启用长按映射")
+							field = "长按快捷键录制区域"
 						}
-						click(t, tt, "快捷键录制区域")
+						click(t, tt, field)
 						for range 2 {
 							tt.Key(0, key)
 							assertRecording(t, v, physicalCode(key))
-							if !v.editing || !m.state.Recording || !tt.Focused("快捷键录制区域") {
+							if !v.editing || !m.state.Recording || !tt.Focused(field) {
 								t.Fatal("a recorded key dismissed the editor or moved focus")
 							}
 						}
@@ -115,7 +116,7 @@ func TestNativeRecordingSpecialKeysDoNotDismissOrNavigate(t *testing.T) {
 }
 
 func TestNativeRecordingStopsUntilClickedAgain(t *testing.T) {
-	for _, transition := range []string{"mode", "action", "window-focus", "input-method", "threshold", "preset", "blank"} {
+	for _, transition := range []string{"action", "window-focus", "input-method", "threshold", "blank"} {
 		t.Run(transition, func(t *testing.T) {
 			m := newUIMapper()
 			m.state.Settings.Back = longPressFixture()
@@ -126,11 +127,9 @@ func TestNativeRecordingStopsUntilClickedAgain(t *testing.T) {
 			click(t, tt, "快捷键录制区域")
 			tt.KeyDown(ui.KeyC)
 			switch transition {
-			case "mode":
-				click(t, tt, "手动选择")
-				click(t, tt, "键盘录制")
 			case "action":
-				click(t, tt, "长按动作")
+				click(t, tt, "长按快捷键录制区域")
+				click(t, tt, "为后退键设置快捷键")
 			case "window-focus":
 				tt.SetFocused(false)
 				tt.SetFocused(true)
@@ -139,8 +138,6 @@ func TestNativeRecordingStopsUntilClickedAgain(t *testing.T) {
 				click(t, tt, "豆包输入法")
 			case "threshold":
 				changeThreshold(t, tt, "750")
-			case "preset":
-				click(t, tt, "粘贴")
 			case "blank":
 				click(t, tt, "为后退键设置快捷键")
 			}
@@ -226,8 +223,7 @@ func TestNativeRecordingFieldSnapshots(t *testing.T) {
 		writeSnapshot(t, tt, filepath.Join(directory, platform+"-recorder-armed.png"))
 		tt.Key(0, ui.KeyEscape)
 		writeSnapshot(t, tt, filepath.Join(directory, platform+"-recorder-escape.png"))
-		click(t, tt, "启用长按映射")
-		click(t, tt, "快捷键录制区域")
+		click(t, tt, "长按快捷键录制区域")
 		tt.HoldModifiers(ui.Ctrl | ui.Shift | ui.Super)
 		tt.HoldModifiers(0)
 		writeSnapshot(t, tt, filepath.Join(directory, platform+"-recorder-long-modifiers.png"))
@@ -409,13 +405,12 @@ func TestNativeRecordingResetsAfterCaptureTransitions(t *testing.T) {
 		{"restart", func(t *testing.T, tt *ui.Tester) {
 			click(t, tt, "快捷键录制区域")
 		}},
-		{"mode", func(t *testing.T, tt *ui.Tester) {
-			click(t, tt, "手动选择")
-			click(t, tt, "键盘录制")
+		{"other-row", func(t *testing.T, tt *ui.Tester) {
+			click(t, tt, "长按快捷键录制区域")
 			click(t, tt, "快捷键录制区域")
 		}},
-		{"preset", func(t *testing.T, tt *ui.Tester) {
-			click(t, tt, "粘贴")
+		{"clear", func(t *testing.T, tt *ui.Tester) {
+			click(t, tt, "清空单击快捷键")
 			click(t, tt, "快捷键录制区域")
 		}},
 		{"editor", func(t *testing.T, tt *ui.Tester) {

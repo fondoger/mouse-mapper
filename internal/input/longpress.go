@@ -84,19 +84,25 @@ func (e *Engine) decideTimedPressLocked(press *timedPress, long bool) {
 		return
 	}
 	binding := press.binding
+	hold := false
 	if long {
 		action := binding.LongPress
+		hold = action.Hold
 		binding = Binding{Enabled: true, Keys: action.Keys, InputMethod: action.InputMethod, InputMethodName: action.InputMethodName}
 	}
 	if binding.InputMethod != "" {
-		// Retain the focus captured on mouse-down, but a fresh preparation
-		// context lets a decided tap finish after the physical button is up.
-		e.prepareActionLocked(press.button, binding, press.focus, false)
+		// Pending held actions use the same release tracking as immediate
+		// mappings; release during IME preparation reduces them to one tap.
+		e.prepareActionLocked(press.button, binding, press.focus, hold)
 		return
 	}
 	keys, err := e.pressKeysLocked(binding.Keys)
 	if err == nil {
-		err = e.releaseKeysLocked(keys)
+		if hold {
+			e.active[press.button] = keys
+		} else {
+			err = e.releaseKeysLocked(keys)
+		}
 	}
 	if err != nil {
 		e.deferredErrorLocked(err)
