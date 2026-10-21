@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.1 - 2026-10-21
+
+- Replace the automatically armed recording panel with a compact shortcut field. Opening the editor or changing actions/modes never starts capture; explicitly activating the field shows the recording prompt before listening. Existing keys remain intact if no new shortcut is entered.
+- Record Escape, Enter and Tab as shortcut keys while the field is armed, instead of dismissing the editor, submitting it or navigating away. Keep explicit Cancel/close controls and idle Escape dismissal. Keyboard users can focus the field with Tab and activate it with Enter or Space.
+- Stop capture when clicking elsewhere, editing another control or leaving the application window; returning never silently re-arms it. Reset held-key tracking between sessions while retaining complete modifier-only chords regardless of release order.
+- Cover activation, blur, keyboard accessibility and special-key save behavior for both side buttons and single/long actions with native UI regression tests and Windows/macOS-label renderer snapshots. Preserve the exact-current-input-method no-switch behavior and all existing mapping/update defaults.
+
 ## 0.3.0 - 2026-10-20
 
 - Add an optional long-press action for each side button, with an independent shortcut, input method and 100-5000 ms threshold (default 500 ms). Without long press, retain immediate key-down and hold-until-release behavior. With it, a short release sends one complete tap; reaching the threshold immediately sends one long-action tap, never repeats and never also sends the short action on release.

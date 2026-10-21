@@ -43,7 +43,7 @@ func (v *nativeView) inputMethodChoice(c *ui.Context) {
 				if ui.ButtonBase(c.Key("refresh")).Label("刷新输入法列表").Padding(3, 5).TextColor(blue).Disabled(v.busy).Children(func() {
 					ui.Text(c, "刷新").FontSize(10)
 				}).Clicked() {
-					v.capture = false
+					v.stopCapture()
 					v.perform(func() (State, error) { return provider.RefreshInputMethods(), nil }, nil)
 				}
 			}
@@ -73,8 +73,7 @@ func (v *nativeView) inputMethodChoice(c *ui.Context) {
 			})
 		})
 		if selector.Trigger.Changed() {
-			v.capture = false
-			v.captureFocus.CancelFocus()
+			v.stopCapture()
 			v.editInputMethodName = ""
 			for _, method := range v.state.InputMethods {
 				if method.ID == v.editInputMethod {

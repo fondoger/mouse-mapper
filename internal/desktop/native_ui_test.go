@@ -25,7 +25,7 @@ type uiMapper struct {
 
 func newUIMapper() *uiMapper {
 	return &uiMapper{state: State{
-		Settings: config.Default(), Version: "0.3.0", SupportedCodes: input.SupportedCodes(),
+		Settings: config.Default(), Version: "0.3.1", SupportedCodes: input.SupportedCodes(),
 		Status:     input.Status{Platform: runtime.GOOS, Available: true, Running: true},
 		ConfigPath: "settings.json",
 		Update:     UpdateState{Enabled: true, AutomaticChecks: true, IntervalDays: 7},
@@ -94,6 +94,7 @@ func TestNativeViewRecordsAndSavesShortcut(t *testing.T) {
 	if !m.state.Recording || !v.editing {
 		t.Fatal("recording must suspend mapping before the editor opens")
 	}
+	click(t, tt, "快捷键录制区域")
 	tt.Key(ui.Ctrl|ui.Shift, ui.KeyK)
 	click(t, tt, "保存快捷键")
 	want := []string{"Control", "Shift", "KeyK"}
@@ -122,6 +123,7 @@ func TestNativeViewFailedSaveKeepsOldMapping(t *testing.T) {
 	v := testView(m)
 	tt := ui.NewTester(v.main, 1080, 760)
 	click(t, tt, "编辑后退键")
+	click(t, tt, "快捷键录制区域")
 	tt.Key(0, ui.KeySpace)
 	m.saveErr = errors.New("disk is read-only")
 	click(t, tt, "保存快捷键")

@@ -49,7 +49,7 @@ type application struct {
 func Run(assets Assets) error {
 	mygo.App.SetName("Mouse Mapper")
 	if mygo.App.Version() == "" {
-		mygo.App.SetVersion("0.3.0")
+		mygo.App.SetVersion("0.3.1")
 	}
 	if !mygo.App.RequestSingleInstanceLock() {
 		return nil

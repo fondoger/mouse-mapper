@@ -48,14 +48,16 @@ func TestNativeLongPressRecordsBothActionsAndInputMethods(t *testing.T) {
 				label = "编辑前进键"
 			}
 			click(t, tt, label)
+			click(t, tt, "快捷键录制区域")
 			tt.Key(ui.Ctrl|ui.Shift, ui.KeySpace)
 			shortKeys := []string{"Control", "Shift", "Space"}
 			click(t, tt, "选择触发前的输入法")
 			click(t, tt, "微信输入法")
 			click(t, tt, "启用长按映射")
-			if !v.editDraft.longEnabled || v.editAction != 1 || !tt.Focused("快捷键录制区域") {
-				t.Fatal("enabling long press did not open its independent recorder")
+			if !v.editDraft.longEnabled || v.editAction != 1 || v.capture {
+				t.Fatal("enabling long press must open an idle independent recorder")
 			}
+			click(t, tt, "快捷键录制区域")
 			tt.Key(ui.Alt|ui.Shift, ui.KeyV)
 			longKeys := []string{"Alt", "Shift", "KeyV"}
 			click(t, tt, "选择触发前的输入法")
@@ -108,10 +110,12 @@ func TestNativeLongPressCancelPreservesBothSavedActions(t *testing.T) {
 	v := testView(m)
 	tt := ui.NewTester(v.main, 1080, 760)
 	click(t, tt, "编辑后退键")
+	click(t, tt, "快捷键录制区域")
 	tt.Key(ui.Ctrl, ui.KeyX)
 	click(t, tt, "选择触发前的输入法")
 	click(t, tt, "豆包输入法")
 	click(t, tt, "长按动作")
+	click(t, tt, "快捷键录制区域")
 	tt.Key(ui.Shift, ui.KeyL)
 	click(t, tt, "选择触发前的输入法")
 	click(t, tt, "微信输入法")
@@ -155,6 +159,7 @@ func TestNativeLongPressDisablingPreservesShortAction(t *testing.T) {
 			tt := ui.NewTester(v.main, 1080, 760)
 			click(t, tt, label)
 			click(t, tt, "长按动作")
+			click(t, tt, "快捷键录制区域")
 			tt.Key(ui.Shift, ui.KeyZ)
 			click(t, tt, "选择触发前的输入法")
 			click(t, tt, "不切换（保持当前输入法）")
@@ -185,10 +190,12 @@ func TestNativeLongPressFailedSaveIsAtomicAndRetainsBothDrafts(t *testing.T) {
 	v := testView(m)
 	tt := ui.NewTester(v.main, 1080, 760)
 	click(t, tt, "编辑后退键")
+	click(t, tt, "快捷键录制区域")
 	tt.Key(ui.Ctrl, ui.KeyX)
 	click(t, tt, "选择触发前的输入法")
 	click(t, tt, "不切换（保持当前输入法）")
 	click(t, tt, "长按动作")
+	click(t, tt, "快捷键录制区域")
 	tt.Key(ui.Shift, ui.KeyL)
 	changeThreshold(t, tt, "900")
 	m.saveErr = errors.New("mock settings write failed")
@@ -288,6 +295,7 @@ func TestNativeLongPressRecorderKeepsModifierChordsIndependent(t *testing.T) {
 			tt.HoldModifiers(ui.Super)
 			tt.HoldModifiers(0)
 			click(t, tt, "启用长按映射")
+			click(t, tt, "快捷键录制区域")
 			tt.HoldModifiers(ui.Alt | ui.Super)
 			tt.HoldModifiers(ui.Super)
 			tt.HoldModifiers(0)

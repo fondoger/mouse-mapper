@@ -60,11 +60,7 @@ func (v *nativeView) switchEditorAction(action int) {
 	v.editAction = action
 	v.loadEditorAction()
 	v.editError, v.captured = "", false
-	v.recorder.reset()
-	v.capture = v.editMode == 0
-	if v.capture {
-		v.captureFocus.Focus()
-	}
+	v.stopCapture()
 }
 
 func (v *nativeView) setLongPressEnabled(on bool) {
@@ -116,8 +112,7 @@ func (v *nativeView) longPressEditor(c *ui.Context) {
 		field := ui.TextInput(c.Key("threshold"), &v.editDraft.threshold).Label("长按阈值（毫秒）").
 			Width(66).FontSize(11).Padding(7, 8).Placeholder("500").Tooltip("100-5000 毫秒").Disabled(v.busy)
 		if field.Focused() {
-			v.capture = false
-			v.recorder.reset()
+			v.stopCapture()
 		}
 		if field.Changed() {
 			v.editError = ""

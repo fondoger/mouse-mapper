@@ -24,6 +24,7 @@ func TestNativeEditorSavesInputMethodBeforeShortcut(t *testing.T) {
 	v := testView(m)
 	tt := ui.NewTester(v.main, 1080, 760)
 	click(t, tt, "编辑后退键")
+	click(t, tt, "快捷键录制区域")
 	tt.Key(ui.Ctrl|ui.Shift, ui.KeySpace)
 	click(t, tt, "选择触发前的输入法")
 	click(t, tt, "微信输入法")
@@ -47,6 +48,7 @@ func TestNativeEditorPreservesInputMethodWhenOnlyKeysChange(t *testing.T) {
 	v := testView(m)
 	tt := ui.NewTester(v.main, 1080, 760)
 	click(t, tt, "编辑后退键")
+	click(t, tt, "快捷键录制区域")
 	tt.Key(ui.Ctrl, ui.KeyL)
 	click(t, tt, "保存快捷键")
 	if m.state.Settings.Back.InputMethod != "test:wechat" || !slices.Equal(m.state.Settings.Back.Keys, []string{"Control", "KeyL"}) {
@@ -60,6 +62,7 @@ func TestNativeInputMethodKeyboardSelectionDoesNotRecordNavigation(t *testing.T)
 	v := testView(m)
 	tt := ui.NewTester(v.main, 1080, 760)
 	click(t, tt, "编辑后退键")
+	click(t, tt, "快捷键录制区域")
 	tt.Key(ui.Ctrl, ui.KeyK)
 	click(t, tt, "选择触发前的输入法")
 	tt.Key(0, ui.KeyDown)
@@ -98,6 +101,7 @@ func TestNativeMissingInputMethodDoesNotLoseSavedSelection(t *testing.T) {
 	if !tt.HasText("Previous IME（未检测到）") {
 		t.Fatal("missing saved input method was silently replaced with opt-out")
 	}
+	click(t, tt, "快捷键录制区域")
 	tt.Key(ui.Ctrl, ui.KeyL)
 	click(t, tt, "保存快捷键")
 	if m.state.Settings.Back.InputMethod != "test:uninstalled" || m.state.Settings.Back.InputMethodName != "Previous IME" {

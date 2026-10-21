@@ -80,9 +80,7 @@ func (v *nativeView) acceptState(state State) {
 	v.state = state
 	if !state.Recording {
 		v.editing = false
-		v.capture = false
-		v.recorder.reset()
-		v.captureFocus.CancelFocus()
+		v.stopCapture()
 	}
 }
 
@@ -147,12 +145,11 @@ func (v *nativeView) startEditor(button string) {
 		if !v.state.Recording {
 			return
 		}
-		v.editing, v.capture, v.captured = true, true, false
+		v.editing, v.capture, v.captured = true, false, false
 		v.editButton, v.editMode, v.editError = button, 0, ""
 		v.editDraft, v.editAction = draft, 0
 		v.loadEditorAction()
-		v.recorder.reset()
-		v.captureFocus.Focus()
+		v.stopCapture()
 	})
 }
 
@@ -544,12 +541,8 @@ func (v *nativeView) editor(c *ui.Context) {
 				v.longPressEditor(c.Key("long-press-editor"))
 			}
 			if ui.Segmented(c.Key("record-mode"), &v.editMode, "键盘录制", "手动选择").Label("设置方式").Disabled(v.busy).Changed() {
-				v.capture = v.editMode == 0
-				v.recorder.reset()
-				if v.capture {
-					v.captured = false
-					v.captureFocus.Focus()
-				} else {
+				v.stopCapture()
+				if v.editMode == 1 {
 					v.syncManualQuery()
 				}
 			}
@@ -567,13 +560,13 @@ func (v *nativeView) editor(c *ui.Context) {
 				for _, preset := range shortcutPresets(v.state.Status.Platform) {
 					if ui.Button(c.Key(preset.name), preset.name).FontSize(11).Padding(7, 11).Disabled(v.busy).Clicked() {
 						v.editKeys = slices.Clone(preset.keys)
-						v.capture, v.captured, v.editError = false, true, ""
-						v.recorder.reset()
+						v.stopCapture()
+						v.captured, v.editError = true, ""
 						v.syncManualQuery()
 					}
 				}
 			})
-			message, color := "编辑期间暂停映射。特殊键、仅修饰键可通过手动选择设置。", muted
+			message, color := "编辑期间暂停映射。系统保留的快捷键可通过手动选择设置。", muted
 			if v.editError != "" {
 				message, color = v.editError, ui.Hex("#bf4b46")
 			} else if v.editDraft.longEnabled {
@@ -594,8 +587,8 @@ func (v *nativeView) editor(c *ui.Context) {
 		})
 	})
 	if wasEditing && dialog.Dismissed() {
-		// Escape belongs to the dialog. It remains assignable in the manual
-		// picker, and every dismissal must resume the native input service.
+		// An armed field consumes Escape before the dialog. Other dismissals
+		// must still resume the native input service.
 		v.editing = true
 		if !v.busy {
 			v.cancelEditor()
@@ -603,42 +596,50 @@ func (v *nativeView) editor(c *ui.Context) {
 	}
 }
 
+func (v *nativeView) stopCapture() {
+	v.capture = false
+	v.recorder.reset()
+	v.captureFocus.CancelFocus()
+}
+
 func (v *nativeView) captureArea(c *ui.Context) {
-	background, border := canvas, line
-	if v.capture {
-		background, border = blueWash, blue.Alpha(.35)
-	}
-	area := ui.Column(c.Key("capture")).Padding(20).Gap(15).Center().FillWidth().Radius(13).
-		Background(background).Border(1, border).Focusable().InputMethod(false).Bind(&v.captureFocus).
-		Label("快捷键录制区域").Disabled(v.busy)
-	if area.Clicked() {
-		v.capture, v.captured, v.editError = true, false, ""
-		v.recorder.reset()
-		v.captureFocus.Focus()
-	}
-	if area.Focused() && v.capture && !v.busy {
-		if keys := v.recorder.modifiers(c.Modifiers()); len(keys) != 0 {
-			v.editKeys, v.captured, v.editError = keys, true, ""
-		}
-	} else {
-		v.recorder.reset()
-	}
-	area.HandleInput(v.recordInput).Children(func() {
-		hint := "点击这里，开始录制"
-		if v.capture {
-			hint = "正在聆听你的键盘"
-			if v.captured {
-				hint = "已捕捉 · 可以继续重录"
+	ui.Column(c.Key("shortcut-field")).Gap(8).FillWidth().Children(func() {
+		ui.Row(c).Gap(14).FillWidth().Children(func() {
+			ui.Text(c, "快捷键").FontSize(12).TextColor(ink)
+			ui.Spacer(c)
+			area := ui.Row(c.Key("capture")).Width(300).MinWidth(0).Height(42).Padding(0, 12).Radius(8).
+				Background(canvas).Border(1, line).Focusable().InputMethod(false).Bind(&v.captureFocus).
+				Label("快捷键录制区域").Disabled(v.busy)
+			if area.Clicked() {
+				v.capture, v.captured, v.editError = true, false, ""
+				v.recorder.reset()
+				// Modifiers held before activation must not replace the prompt.
+				v.recorder.mods = c.Modifiers()
+				v.captureFocus.Focus()
+			} else if !area.Focused() || area.PressedOutside() || v.busy {
+				v.stopCapture()
 			}
-		}
-		ui.Row(c).Gap(6).Children(func() {
 			if v.capture {
-				ui.Box(c).Size(5, 5).Radius(3).Background(blue)
+				area.BorderColor(blue).Background(white)
+				if keys := v.recorder.modifiers(c.Modifiers()); len(keys) != 0 {
+					v.editKeys, v.captured, v.editError = keys, true, ""
+				}
 			}
-			ui.Text(c, hint).FontSize(10).TextColor(blue)
+			area.HandleInput(v.recordInput).Children(func() {
+				text, color := describeKeys(v.editKeys, v.state.Status.Platform), ink
+				if v.capture && !v.captured {
+					text, color = "按下快捷键", muted
+				} else if text == "" {
+					text, color = "点击设置快捷键", muted
+				}
+				ui.Text(c, text).FontSize(13).TextColor(color).SingleLine().Grow(1).MinWidth(0).Tooltip(text)
+			})
 		})
-		keycaps(c, v.editKeys, v.state.Status.Platform, 26)
-		ui.Text(c, "按下想要的快捷键 · Esc 取消编辑").FontSize(10).TextColor(muted)
+		hint := "点击输入框后录制，点击其他位置结束。"
+		if v.capture {
+			hint = "Esc、Enter、Tab 均可录入；取消编辑请点击“取消”。"
+		}
+		ui.Text(c, hint).FontSize(10).TextColor(muted)
 	})
 }
 
@@ -658,10 +659,6 @@ func (v *nativeView) recordInput(event ui.InputEvent) bool {
 		return false
 	}
 	if event.Repeat {
-		return true
-	}
-	if event.Key == ui.KeyEscape && event.Mods == 0 {
-		v.cancelEditor()
 		return true
 	}
 	v.recorder.press(event)

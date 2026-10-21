@@ -23,13 +23,14 @@ Record the OS version, CPU architecture, mouse model, display scale, app version
 - [ ] Globally pause and resume; both original behavior and saved mappings return at the appropriate time.
 - [ ] Change a mapping while a side button is held; it releases safely and does not activate the new shortcut mid-press.
 - [ ] Restart; mapping settings and enable states persist. Invalid shortcuts do not replace valid saved values.
-- [ ] Open the native shortcut editor; mapping is suspended. Recording uses the physical key position, Escape cancels, and manual selection handles keys that the window manager would consume.
+- [ ] Open the native shortcut editor; mapping is suspended but keyboard recording is idle. Click the compact shortcut field: it shows the recording prompt and only then listens. Escape, Enter and Tab are recorded without dismissing, saving or navigating. Save/reopen verifies each key for both buttons and both short/long actions. Manual selection handles keys that the window manager would consume.
+- [ ] Click elsewhere (including non-focusable dialog text), switch modes/actions, or leave and return to the window: capture stops and requires activation again. Existing keys survive activation without input and blur. Merely tabbing to the field does not arm it; Enter/Space explicitly activates it. Cancel and the close button discard drafts and resume mapping; Escape cancels only when the recorder is idle.
 - [ ] Record only `Ctrl+Shift+Win` (or `Control+Shift+Command` on macOS), release the modifiers in all six orders, then save and reopen: the full chord remains. After all keys are up, record another modifier-only chord. Separate non-overlapping modifier presses must not accumulate. `Ctrl+C`, release C while holding Ctrl, then press V must become `Ctrl+V`; releasing modifiers or auto-repeat from a previously held key must not replace it.
 - [ ] Successful save, cancellation and recording timeout all restore the mapper's previous enabled state.
 
 ## Optional long press
 
-- [ ] Open either side-button editor and enable long press. Configure short Enter, long Escape using the manual picker, and a 500 ms threshold. Save/reopen/restart preserves both actions; Escape pressed during recording still cancels the editor.
+- [ ] Open either side-button editor and enable long press. Click each action's shortcut field to record short Enter and long Escape, and use a 500 ms threshold. Save/reopen/restart preserves both actions; Escape pressed during recording must not dismiss the editor. The manual picker remains available.
 - [ ] Before release, a press shorter than 500 ms sends nothing. Releasing it sends exactly one complete Enter tap and no Escape. The original side-button down/up must both remain consumed.
 - [ ] Hold until the threshold: Escape fires once immediately without waiting for mouse-up. Continue holding for several seconds, then release: there is no repeat and no Enter. Repeat around the exact threshold boundary and with a busy event loop.
 - [ ] Give Back and Forward different thresholds and independent actions. Overlapping presses and physically held/shared modifiers leave no stuck keys or duplicate actions.
@@ -121,7 +122,7 @@ go run ./scripts/buildime -verify-only
 go test ./...
 go vet ./...
 go build -tags mygo_noinspector ./...
-go run ./scripts/releasecheck -tag v0.3.0 -repository fondoger/mouse-mapper
+go run ./scripts/releasecheck -tag v0.3.1 -repository fondoger/mouse-mapper
 ```
 
 `buildime` downloads a pinned, SHA-256-verified LLVM-MinGW toolchain into the ignored workspace cache and compiles the six small no-CRT query assets. It does not execute the compiled helpers. Windows CI/release tests set `MOUSE_MAPPER_REQUIRE_NATIVE_PROBE_ASSETS=1` so missing or corrupt embedded assets fail the build; `-verify-only` additionally checks current C sources, PE architecture/exports/imports and hashes. Windows jobs also set `MOUSE_MAPPER_NATIVE_PROBE_TEST=1` to run the isolated, non-activating target-thread query fixture described below; this gate does not require the optional input-hook dispatch. macOS jobs do not download or run a C compiler. The application remains `CGO_ENABLED=0`.
@@ -129,7 +130,7 @@ go run ./scripts/releasecheck -tag v0.3.0 -repository fondoger/mouse-mapper
 The releasecheck example must use the version currently in `mygo.json`. To render native snapshots, set `MOUSE_MAPPER_UI_SNAPSHOTS` to an output directory and run:
 
 ```sh
-go test ./internal/desktop -run '^TestNative(Snapshots|LongPressSnapshots)$' -count=1
+go test ./internal/desktop -run '^TestNative(Snapshots|LongPressSnapshots|RecordingFieldSnapshots)$' -count=1
 ```
 
 For the opt-in Windows input integration test, set `MOUSE_MAPPER_NATIVE_TEST=1` and run `go test ./internal/input -run TestWindowsNativeHookAndSendInput -count=1`. It verifies that queued output executes on the actual input-hook thread. Its test-owned keyboard hook consumes the tagged F24 events; it does not send unconsumed shortcuts or change the foreground window. The CI manual-dispatch option `native_input` is off by default and skips this smoke test on runners without an interactive desktop.
@@ -165,6 +166,13 @@ go test ./internal/desktop -run TestNativeOverlayCompositionAndPlacement -v -cou
 ```
 
 Repeat with `MYGO_GPU=0`, then restore both environment variables. The test briefly shows only test-owned, non-activating windows; it never starts the input service. It checks real native bounds, composed corner/background pixels, focus and click-through behavior. The screenshot is cropped to its own opaque backdrop and overlay; set `MOUSE_MAPPER_OVERLAY_SNAPSHOT` for a chosen output path, otherwise it uses the test's temporary directory. Offscreen renderer snapshots alone cannot detect this Windows black-background regression.
+
+### Recorded 0.3.1 coverage
+
+- Windows ARM64 and an x64-emulated process on the same host: full package tests pass. Windows/macOS arm64/amd64 production-tag cross-builds and target-specific vet pass, together with MyGo's native-UI lifetime vet and native helper verification.
+- Native UI regression tests cover idle opening, explicit mouse/keyboard activation, the prompt without draft erasure, blur/reactivation, action/mode changes and modifier-only release order. Escape, Enter, Tab, Space and Backspace save correctly across both side buttons, short/long actions and Windows/macOS key-label modes.
+- Headless native-renderer snapshots cover idle, armed, recorded Escape and modifier-only long actions at the minimum window size. These use the actual view code, but simulated platform labels are not macOS hardware acceptance. Input/IME engines are unchanged; their existing tests, including exact-current no-activation checks, remain passing.
+- No installed application, user settings, foreground input method or vendor voice input was changed by these checks. Retain the physical-device and macOS runtime acceptance limits below.
 
 ### Recorded 0.3.0 coverage
 
